@@ -1,0 +1,426 @@
+using System.Globalization;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Documents;
+using System.Windows.Media;
+
+namespace RisupEditor;
+
+internal enum PromptPreviewEntryKind { Message, Runtime }
+
+internal sealed class PromptPreviewEntry(PromptPreviewEntryKind kind, string role, string content, string? note = null)
+{
+    public PromptPreviewEntryKind Kind { get; } = kind;
+    public string Role { get; } = role;
+    public string Content { get; set; } = content;
+    public string? Note { get; set; } = note;
+    public bool CachePoint { get; set; }
+}
+
+internal sealed class PromptPreviewResult(List<PromptPreviewEntry> entries, IReadOnlyList<string> warnings)
+{
+    public List<PromptPreviewEntry> Entries { get; } = entries;
+    public IReadOnlyList<string> Warnings { get; } = warnings;
+    public string PlainText => string.Join("\n\n", Entries.Select(e =>
+        $"[{e.Role.ToUpperInvariant()}]\n{PromptPreviewEngine.VisibleText(e.Content)}"));
+}
+
+internal static class PromptPreviewEngine
+{
+    internal const char MarkerStart = '\uFFF0';
+    internal const char MarkerEnd = '\uFFF1';
+
+    internal static string Marker(string label) => $"{MarkerStart}{label.Replace(MarkerEnd, ' ')}{MarkerEnd}";
+    internal static string VisibleText(string text)
+    {
+        var output = new StringBuilder(text.Length);
+        for (int position = 0; position < text.Length;)
+        {
+            int start = text.IndexOf(MarkerStart, position);
+            if (start < 0) { output.Append(text.AsSpan(position)); break; }
+            output.Append(text.AsSpan(position, start - position));
+            int end = text.IndexOf(MarkerEnd, start + 1);
+            if (end < 0) { output.Append(text.AsSpan(start)); break; }
+            output.Append('[').Append(text.AsSpan(start + 1, end - start - 1)).Append(']');
+            position = end + 1;
+        }
+        return output.ToString();
+    }
+
+    public static PromptPreviewResult Build(IReadOnlyList<Value> blocks, Preset? basis, IReadOnlyDictionary<string, string> toggles)
+    {
+        bool jailbreak = basis?.Data.Get("jailbreakToggle")?.Boolean() ?? false;
+        bool chainOfThought = basis?.Data.Get("chainOfThought")?.Boolean() ?? false;
+        string model = basis?.Data.Str("aiModel") ?? "";
+        var settings = basis?.Data.Get("promptSettings");
+        bool sendChatAsSystem = settings?.Get("sendChatAsSystem")?.Boolean() ?? false;
+        string postEndInnerFormat = settings?.Str("postEndInnerFormat") ?? "";
+        var warningSet = new HashSet<string>();
+        var evaluator = new ToggleCbsEvaluator(toggles, jailbreak, warningSet);
+        var entries = new List<PromptPreviewEntry>();
+
+        foreach (var block in blocks)
+        {
+            string type = block.Str("type");
+            if (type == "jailbreak" && !jailbreak) continue;
+            if (type == "cot" && !chainOfThought) continue;
+
+            switch (type)
+            {
+                case "plain":
+                case "jailbreak":
+                case "cot":
+                    if (block.Str("type2") == "globalNote") warningSet.Add("globalNote의 캐릭터별 교체와 이미지 지시는 런타임 데이터가 없어 기본 텍스트만 표시합니다.");
+                    if (block.Str("type2") == "main") warningSet.Add("main 프롬프트의 로어북 위치 삽입은 런타임 데이터가 없어 기본 텍스트만 표시합니다.");
+                    AddMessage(entries, Role(block.Str("role", "system")), evaluator.Evaluate(block.Str("text")));
+                    break;
+                case "chatML":
+                    AddChatMl(entries, block.Str("text"), evaluator, warningSet);
+                    break;
+                case "description":
+                    AddMessage(entries, Role(block.Str("role2", "system")), evaluator.Evaluate(ApplySlot(block.Str("innerFormat"), Marker("캐릭터 설명이 이 위치에 들어갑니다"))));
+                    break;
+                case "persona":
+                    AddMessage(entries, Role(block.Str("role2", "system")), evaluator.Evaluate(ApplySlot(block.Str("innerFormat"), Marker("페르소나가 이 위치에 들어갑니다"))));
+                    break;
+                case "memory":
+                    AddMessage(entries, Role(block.Str("role2", "system")), evaluator.Evaluate(ApplySlot(block.Str("innerFormat"), Marker("메모리가 이 위치에 들어갑니다"))));
+                    break;
+                case "authornote":
+                {
+                    string label = string.IsNullOrEmpty(block.Str("defaultText"))
+                        ? "작가의 노트가 이 위치에 들어갑니다"
+                        : $"작가의 노트가 이 위치에 들어갑니다 · 기본값: {block.Str("defaultText")}";
+                    AddMessage(entries, Role(block.Str("role2", "system")), evaluator.Evaluate(ApplySlot(block.Str("innerFormat"), Marker(label))));
+                    break;
+                }
+                case "lorebook":
+                    entries.Add(Runtime("로어북", "활성화된 로어북 항목이 이 위치에 역할별 메시지로 들어갑니다"));
+                    break;
+                case "chat":
+                {
+                    string start = Display(block.Get("rangeStart"), "0"), end = Display(block.Get("rangeEnd"), "end");
+                    string system = sendChatAsSystem && !(block.Get("chatAsOriginalOnSystem")?.Boolean() ?? false) ? " · system 역할로 변환" : "";
+                    entries.Add(Runtime("채팅 기록", $"채팅 기록 {start} → {end} 범위가 이 위치에 들어갑니다{system}"));
+                    break;
+                }
+                case "postEverything":
+                    entries.Add(Runtime("마지막 삽입 영역", "로어북·메모리·보조 지시 등 마지막 삽입 내용이 이 위치에 들어갑니다"));
+                    if (!string.IsNullOrWhiteSpace(postEndInnerFormat)) AddMessage(entries, "system", postEndInnerFormat);
+                    break;
+                case "cache":
+                    ApplyCache(entries, (int)(block.Get("depth")?.Number() ?? 1), block.Str("role", "all"));
+                    break;
+                default:
+                    warningSet.Add($"알 수 없는 블록 유형 '{type}'은 RisuAI의 정적 미리보기에서 결과를 확정할 수 없습니다.");
+                    entries.Add(Runtime("알 수 없는 블록", $"{type} 블록은 원본 설정을 보존하지만 여기서는 실행하지 않습니다"));
+                    break;
+            }
+        }
+
+        bool mergeSystem = model.StartsWith("gpt", StringComparison.OrdinalIgnoreCase)
+            || model.StartsWith("claude", StringComparison.OrdinalIgnoreCase)
+            || model is "openrouter" or "reverse_proxy";
+        if (mergeSystem) entries = MergeSystemMessages(entries);
+        foreach (var entry in entries) entry.Content = entry.Content.Trim();
+        return new(entries, warningSet.ToArray());
+    }
+
+    static string Display(Value? value, string fallback) => value?.Text() ?? value?.Number()?.ToString(CultureInfo.InvariantCulture) ?? fallback;
+    static string Role(string role) => role == "bot" ? "assistant" : role is "user" or "assistant" or "system" ? role : "system";
+    static PromptPreviewEntry Runtime(string role, string label) => new(PromptPreviewEntryKind.Runtime, role, Marker(label));
+
+    static string ApplySlot(string innerFormat, string marker)
+    {
+        if (string.IsNullOrEmpty(innerFormat)) return marker;
+        int slot = innerFormat.IndexOf("{{slot}}", StringComparison.Ordinal);
+        return slot < 0 ? innerFormat : innerFormat[..slot] + marker + innerFormat[(slot + 8)..];
+    }
+
+    static void AddMessage(List<PromptPreviewEntry> entries, string role, string content, string? note = null)
+    {
+        if (string.IsNullOrWhiteSpace(content)) return;
+        entries.Add(new(PromptPreviewEntryKind.Message, role, content, note));
+    }
+
+    static void AddChatMl(List<PromptPreviewEntry> entries, string data, ToggleCbsEvaluator evaluator, HashSet<string> warnings)
+    {
+        const string starter = "<|im_start|>", separator = "<|im_sep|>", ender = "<|im_end|>";
+        string trimmed = data.Trim();
+        if (!trimmed.StartsWith(starter, StringComparison.Ordinal))
+        {
+            warnings.Add("ChatML 블록이 <|im_start|>로 시작하지 않아 역할별 메시지로 해석하지 못했습니다.");
+            entries.Add(Runtime("ChatML 오류", "유효하지 않은 ChatML 원문은 이 위치에서 메시지로 변환되지 않습니다"));
+            return;
+        }
+        foreach (string source in trimmed.Split(starter, StringSplitOptions.RemoveEmptyEntries))
+        {
+            string value = source; string role = "user";
+            foreach (string candidate in new[] { "user", "system", "assistant" })
+            {
+                string compact = candidate + separator;
+                if (value.StartsWith(compact, StringComparison.Ordinal)) { role = candidate; value = value[compact.Length..]; break; }
+                if (value.StartsWith(candidate + " ", StringComparison.Ordinal) || value.StartsWith(candidate + "\n", StringComparison.Ordinal)) { role = candidate; value = value[(candidate.Length + 1)..]; break; }
+            }
+            value = value.Trim(); if (value.EndsWith(ender, StringComparison.Ordinal)) value = value[..^ender.Length];
+            int thoughts = 0;
+            value = Regex.Replace(value, @"<Thoughts>(.+)</Thoughts>", _ => { thoughts++; return ""; }, RegexOptions.Singleline);
+            AddMessage(entries, role, evaluator.Evaluate(value), thoughts == 0 ? null : $"{thoughts}개 thought 포함");
+        }
+    }
+
+    static void ApplyCache(List<PromptPreviewEntry> entries, int depth, string role)
+    {
+        int remaining = Math.Max(0, depth);
+        for (int i = entries.Count - 1; i >= 0 && remaining > 0; i--)
+        {
+            var entry = entries[i];
+            if (entry.Kind != PromptPreviewEntryKind.Message || (role != "all" && entry.Role != Role(role))) continue;
+            entry.CachePoint = true; remaining--;
+        }
+    }
+
+    static List<PromptPreviewEntry> MergeSystemMessages(List<PromptPreviewEntry> source)
+    {
+        var result = new List<PromptPreviewEntry>();
+        foreach (var entry in source)
+        {
+            if (entry.Kind == PromptPreviewEntryKind.Message && entry.Role == "system" && result.LastOrDefault() is { Kind: PromptPreviewEntryKind.Message, Role: "system" } previous)
+            {
+                previous.Content += "\n\n" + entry.Content;
+                previous.CachePoint |= entry.CachePoint;
+                if (!string.IsNullOrEmpty(entry.Note)) previous.Note = string.IsNullOrEmpty(previous.Note) ? entry.Note : previous.Note + " · " + entry.Note;
+            }
+            else result.Add(entry);
+        }
+        return result;
+    }
+}
+
+internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> toggles, bool jailbreak, HashSet<string> warnings)
+{
+    sealed record InlineResult(string Text, bool Unknown);
+
+    public string Evaluate(string text)
+    {
+        int position = 0; string result = ParseSequence(text, ref position, out _);
+        return result;
+    }
+
+    string ParseSequence(string source, ref int position, out string? stop)
+    {
+        var output = new StringBuilder(); stop = null;
+        while (position < source.Length)
+        {
+            int open = source.IndexOf("{{", position, StringComparison.Ordinal);
+            if (open < 0) { output.Append(source.AsSpan(position)); position = source.Length; break; }
+            output.Append(source.AsSpan(position, open - position));
+            if (!ReadToken(source, open, out string token, out int after)) { output.Append(source.AsSpan(open)); position = source.Length; break; }
+            position = after; string trimmed = token.Trim();
+            if (trimmed == ":else" || (trimmed.StartsWith('/') && !trimmed.StartsWith("//"))) { stop = trimmed; return output.ToString(); }
+
+            if (IsConditional(trimmed))
+            {
+                int originalStart = open;
+                var resolved = ResolveInlineText(trimmed);
+                bool? condition = EvaluateCondition(resolved.Text, resolved.Unknown, out string mode);
+                string truth = ParseSequence(source, ref position, out string? marker), falsy = "";
+                if (marker == ":else") falsy = ParseSequence(source, ref position, out marker);
+                if (marker is null || !marker.StartsWith('/'))
+                {
+                    warnings.Add("닫히지 않은 CBS 조건 블록은 원문으로 보존했습니다.");
+                    output.Append(source.AsSpan(originalStart, position - originalStart)); continue;
+                }
+                if (condition is null)
+                {
+                    warnings.Add($"런타임 값이 필요한 조건 '{{{{{trimmed}}}}}'은 평가하지 않고 원문으로 보존했습니다.");
+                    output.Append(source.AsSpan(originalStart, position - originalStart)); continue;
+                }
+                string selected = condition.Value ? truth : falsy;
+                output.Append(FormatConditional(selected, trimmed, mode));
+                continue;
+            }
+
+            var inline = ResolveInlineToken(trimmed);
+            output.Append(inline.Text);
+        }
+        return output.ToString();
+    }
+
+    static bool ReadToken(string source, int start, out string token, out int after)
+    {
+        int depth = 1;
+        for (int i = start + 2; i < source.Length - 1;)
+        {
+            if (source.AsSpan(i).StartsWith("{{")) { depth++; i += 2; continue; }
+            if (source.AsSpan(i).StartsWith("}}"))
+            {
+                depth--; if (depth == 0) { token = source[(start + 2)..i]; after = i + 2; return true; }
+                i += 2; continue;
+            }
+            i++;
+        }
+        token = ""; after = source.Length; return false;
+    }
+
+    static bool IsConditional(string token) => token.StartsWith("#if ") || token.StartsWith("#if_pure ") || token.StartsWith("#when");
+
+    InlineResult ResolveInlineText(string text)
+    {
+        var output = new StringBuilder(); bool unknown = false; int position = 0;
+        while (position < text.Length)
+        {
+            int open = text.IndexOf("{{", position, StringComparison.Ordinal);
+            if (open < 0) { output.Append(text.AsSpan(position)); break; }
+            output.Append(text.AsSpan(position, open - position));
+            if (!ReadToken(text, open, out string token, out int after)) { output.Append(text.AsSpan(open)); unknown = true; break; }
+            var resolved = ResolveInlineToken(token.Trim()); output.Append(resolved.Text); unknown |= resolved.Unknown; position = after;
+        }
+        return new(output.ToString(), unknown);
+    }
+
+    InlineResult ResolveInlineToken(string token)
+    {
+        string normalized = token.Split(':', 2)[0].ToLowerInvariant().Replace("_", "").Replace("-", "").Replace(" ", "");
+        if (normalized == "getglobalvar")
+        {
+            string[] pieces = token.Contains("::", StringComparison.Ordinal) ? token.Split("::") : token.Split(':');
+            string key = pieces.ElementAtOrDefault(1) ?? "";
+            if (key.StartsWith("toggle_", StringComparison.Ordinal))
+            {
+                string toggle = key[7..]; return new(toggles.TryGetValue(toggle, out string? value) ? value : "null", false);
+            }
+            warnings.Add($"전역 변수 '{key}'는 편집기에 런타임 값이 없어 원문으로 보존했습니다.");
+            return new("{{" + token + "}}", true);
+        }
+        if (normalized == "jbtoggled") return new(jailbreak ? "1" : "0", false);
+        if (token == "slot" || token.StartsWith("slot::", StringComparison.Ordinal)) return new("{{" + token + "}}", false);
+        warnings.Add($"CBS '{{{{{token}}}}}'은 런타임 값이나 RisuAI 전체 파서가 필요해 원문으로 보존했습니다.");
+        return new("{{" + token + "}}", true);
+    }
+
+    bool? EvaluateCondition(string token, bool unknown, out string mode)
+    {
+        mode = "normal"; if (unknown) return null;
+        if (token.StartsWith("#if_pure ")) return Truthy(token[9..]);
+        if (token.StartsWith("#if ")) return Truthy(token[4..]);
+        if (token.StartsWith("#when ")) return Truthy(token[6..]);
+        if (!token.StartsWith("#when::")) return null;
+        var statement = token.Split("::").Skip(1).ToList();
+        if (statement.Count == 1) return Truthy(statement[0]);
+        while (statement.Count > 1)
+        {
+            string condition = Pop(statement), op = Pop(statement);
+            switch (op)
+            {
+                case "not": statement.Add(Truthy(condition) ? "0" : "1"); break;
+                case "keep": mode = "keep"; statement.Add(condition); break;
+                case "legacy": mode = "legacy"; statement.Add(condition); break;
+                case "and": statement.Add(Truthy(condition) && Truthy(Pop(statement)) ? "1" : "0"); break;
+                case "or": statement.Add(Truthy(condition) || Truthy(Pop(statement)) ? "1" : "0"); break;
+                case "is": statement.Add(condition == Pop(statement) ? "1" : "0"); break;
+                case "isnot": statement.Add(condition != Pop(statement) ? "1" : "0"); break;
+                case "toggle": statement.Add(Truthy(Toggle(condition)) ? "1" : "0"); break;
+                case "tis": statement.Add(Toggle(Pop(statement)) == condition ? "1" : "0"); break;
+                case "tisnot": statement.Add(Toggle(Pop(statement)) != condition ? "1" : "0"); break;
+                case ">": statement.Add(Number(Pop(statement)) > Number(condition) ? "1" : "0"); break;
+                case "<": statement.Add(Number(Pop(statement)) < Number(condition) ? "1" : "0"); break;
+                case ">=": statement.Add(Number(Pop(statement)) >= Number(condition) ? "1" : "0"); break;
+                case "<=": statement.Add(Number(Pop(statement)) <= Number(condition) ? "1" : "0"); break;
+                case "var": case "vis": case "visnot": return null;
+                default: statement.Add(Truthy(condition) ? "1" : "0"); break;
+            }
+        }
+        return statement.Count > 0 && Truthy(statement[0]);
+    }
+
+    string Toggle(string key) => toggles.TryGetValue(key, out string? value) ? value : "null";
+    static string Pop(List<string> values) { if (values.Count == 0) return ""; string value = values[^1]; values.RemoveAt(values.Count - 1); return value; }
+    static bool Truthy(string value) => value is "1" or "true";
+    static double Number(string value) => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double number) ? number : double.NaN;
+
+    static string FormatConditional(string selected, string token, string mode)
+    {
+        if (token.StartsWith("#if_pure ")) return selected;
+        if (token.StartsWith("#if ") || mode == "legacy") return TrimLines(selected);
+        if (mode == "keep" || !selected.Contains('\n')) return selected;
+        var lines = selected.Split('\n').ToList();
+        while (lines.Count > 0 && string.IsNullOrWhiteSpace(lines[0])) lines.RemoveAt(0);
+        while (lines.Count > 0 && string.IsNullOrWhiteSpace(lines[^1])) lines.RemoveAt(lines.Count - 1);
+        return string.Join('\n', lines);
+    }
+
+    static string TrimLines(string value) => string.Join('\n', value.Trim().Split('\n').Select(line => line.TrimStart()));
+}
+
+public sealed partial class MainWindow
+{
+    void RenderPromptPreview(PromptPreviewResult result)
+    {
+        promptPreview.Children.Clear();
+        if (result.Warnings.Count > 0)
+        {
+            var visibleWarnings = result.Warnings.Take(8).Select(w => "• " + w).ToList();
+            if (result.Warnings.Count > visibleWarnings.Count) visibleWarnings.Add($"• 그 밖의 제한 {result.Warnings.Count - visibleWarnings.Count}개");
+            var warningText = Text("동적 미리보기 제한\n" + string.Join("\n", visibleWarnings), 11, new SolidColorBrush(Color.FromRgb(139, 86, 28)));
+            promptPreview.Children.Add(new Border { Background = new SolidColorBrush(Color.FromRgb(255, 247, 226)), BorderBrush = new SolidColorBrush(Color.FromRgb(235, 190, 112)), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(10), Margin = new Thickness(0, 0, 8, 10), Child = warningText });
+        }
+        if (result.Entries.Count == 0)
+        {
+            promptPreview.Children.Add(Card(Text("표시할 프롬프트 메시지가 없습니다.", 13, Muted))); return;
+        }
+        foreach (var entry in result.Entries)
+        {
+            var body = new StackPanel();
+            var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
+            var role = Text(entry.Kind == PromptPreviewEntryKind.Runtime ? "RUNTIME · " + entry.Role : entry.Role.ToUpperInvariant(), 11,
+                entry.Kind == PromptPreviewEntryKind.Runtime ? new SolidColorBrush(Color.FromRgb(151, 91, 18)) : RoleBrush(entry.Role));
+            role.FontWeight = FontWeights.SemiBold; header.Children.Add(role);
+            if (entry.CachePoint)
+            {
+                var cache = Text("CACHE POINT", 10, Accent); DockPanel.SetDock(cache, Dock.Right); header.Children.Add(cache);
+            }
+            body.Children.Add(header);
+            var content = new TextBlock { TextWrapping = TextWrapping.Wrap, FontFamily = new FontFamily("Consolas, Malgun Gothic"), FontSize = 13, Foreground = Ink };
+            AddPreviewInlines(content, entry.Content); body.Children.Add(content);
+            if (!string.IsNullOrEmpty(entry.Note)) { var note = Text(entry.Note, 10, Muted); note.Margin = new Thickness(0, 7, 0, 0); body.Children.Add(note); }
+            promptPreview.Children.Add(new Border
+            {
+                Background = entry.Kind == PromptPreviewEntryKind.Runtime ? new SolidColorBrush(Color.FromRgb(255, 250, 235)) : Brushes.White,
+                BorderBrush = entry.Kind == PromptPreviewEntryKind.Runtime ? new SolidColorBrush(Color.FromRgb(235, 201, 133)) : Line,
+                BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(12), Margin = new Thickness(0, 0, 8, 10), Child = body
+            });
+        }
+    }
+
+    static Brush RoleBrush(string role) => role switch
+    {
+        "user" => new SolidColorBrush(Color.FromRgb(37, 99, 235)),
+        "assistant" => new SolidColorBrush(Color.FromRgb(147, 51, 234)),
+        _ => new SolidColorBrush(Color.FromRgb(15, 118, 110))
+    };
+
+    static void AddPreviewInlines(TextBlock target, string text)
+    {
+        int position = 0;
+        while (position < text.Length)
+        {
+            int start = text.IndexOf(PromptPreviewEngine.MarkerStart, position);
+            if (start < 0) { target.Inlines.Add(new Run(text[position..])); break; }
+            if (start > position) target.Inlines.Add(new Run(text[position..start]));
+            int end = text.IndexOf(PromptPreviewEngine.MarkerEnd, start + 1);
+            if (end < 0) { target.Inlines.Add(new Run(text[start..])); break; }
+            string label = text[(start + 1)..end];
+            var badge = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(230, 247, 244)), BorderBrush = new SolidColorBrush(Color.FromRgb(94, 179, 168)),
+                BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(6, 2, 6, 2), Margin = new Thickness(2, 1, 2, 1),
+                Child = new TextBlock { Text = label, Foreground = new SolidColorBrush(Color.FromRgb(13, 110, 102)), FontFamily = new FontFamily("Segoe UI, Malgun Gothic"), FontSize = 11, FontStyle = FontStyles.Italic }
+            };
+            target.Inlines.Add(new InlineUIContainer(badge) { BaselineAlignment = BaselineAlignment.Center });
+            position = end + 1;
+        }
+    }
+}

@@ -19,6 +19,7 @@ public static class Entry
                 var p=RisupCodec.Load(args[1]);var b=p.Blocks??throw new Exception("no blocks");
                 b[0].Set("text",Value.String("수정 완료\n{{char}}와 {{user}}\nUnicode: 🌿"));b.Reverse();RisupCodec.Save(p,args[2]);return 0;
             }
+            if(args.Length>=2 && args[0]=="--preview-test")return PreviewTests.Run(args[1]);
             var app=new Application(); Theme(app);
             if(args.Length>=2 && args[0]=="--search-test"){var w=new MainWindow();w.Loaded+=(_,_)=>w.RunSearchTest(args[1]);return app.Run(w);}
             if(args.Length>=2 && args[0]=="--diagnostic-test"){var w=new MainWindow();w.Loaded+=(_,_)=>w.RunDiagnosticTest(args[1]);return app.Run(w);}

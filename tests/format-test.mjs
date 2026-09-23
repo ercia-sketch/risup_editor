@@ -49,6 +49,7 @@ async function read(file){
 }
 function run(args,expected=0){const r=spawnSync(exe,args,{timeout:30000,windowsHide:true});assert.equal(r.status,expected,`${args[0]} exit: ${r.status} ${r.error??''}`);}
 const report=[];
+run(['--preview-test',dir]);assert.match(fs.readFileSync(path.join(dir,'preview-result.txt'),'utf8'),/^PASS/);report.push('PASS RisuAI-compatible prompt preview engine');
 for(const [name,compression,rpack,version] of [['reference.risup',compressSync,true,2],['zlib.risup',zlibSync,true,2],['raw-deflate.risup',deflateSync,true,0],['legacy.risupreset',compressSync,false,0]]){
  await writeFixture(name,preset,version,compression,rpack);const dest=path.join(dir,name+'.out.risup');run(['--roundtrip',path.join(dir,name),dest]);
  const {outer,data}=await read(dest);assert.deepStrictEqual(data,decode(encode(preset)));assert.deepStrictEqual(outer.futureEnvelope,decode(encode({keep:'yes'})));report.push('PASS full preservation: '+name);

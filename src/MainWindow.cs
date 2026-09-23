@@ -1,7 +1,5 @@
 using System.IO;
 using System.Security.Cryptography;
-using System.Text;
-using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -23,12 +21,12 @@ public sealed partial class MainWindow : Window
     readonly Dictionary<Value, Action> refreshHeaders = new();
     readonly Dictionary<string, string> toggleValues = new();
     readonly TabControl tabs = new() { BorderThickness = new Thickness(0), Background = Brushes.Transparent };
-    readonly StackPanel work = new(), togglePreview = new();
+    readonly StackPanel work = new(), togglePreview = new(), promptPreview = new() { Margin = new Thickness(0, 0, 6, 0) };
     readonly System.Windows.Threading.DispatcherTimer toggleDelay = new() { Interval = TimeSpan.FromMilliseconds(120) };
     StackPanel? workSections;
     Preset? sectionsBasis;
     readonly ScrollViewer workScroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-    readonly TextBox toggleEditor, promptPreview = new() { IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, FontFamily = new FontFamily("Consolas, Malgun Gothic"), Padding = new Thickness(14) };
+    readonly TextBox toggleEditor;
     readonly TextBlock status = new(), workHint = new(), toggleErrors = new();
     readonly Button copyTab, copyBlock, undoButton, redoButton, previewButton, importToggles;
     readonly ColumnDefinition leftColumn, workColumn, toggleColumn;
@@ -296,9 +294,10 @@ public sealed partial class MainWindow : Window
         for (int i = 0; i < lines.Length; i++)
         {
             if (string.IsNullOrWhiteSpace(lines[i])) continue; string[] parts = lines[i].Split('='); string key = parts.ElementAtOrDefault(0) ?? "", name = parts.ElementAtOrDefault(1) ?? "", type = parts.ElementAtOrDefault(2) ?? "", option = parts.ElementAtOrDefault(3) ?? "";
+            string[] options = parts.Length > 3 ? option.Split(',') : [];
             if (type is "group" or "groupEnd" or "divider") result.Add(new(key, name, type, [], i + 1));
             else if (type == "caption" && name.Length > 0) result.Add(new(key, name, type, [], i + 1));
-            else if (key.Length > 0 && name.Length > 0 && (type.Length == 0 || type is "select" or "text" or "textarea")) result.Add(new(key, name, type.Length == 0 ? null : type, option.Split(',', StringSplitOptions.RemoveEmptyEntries), i + 1));
+            else if (key.Length > 0 && name.Length > 0 && (type.Length == 0 || type is "select" or "text" or "textarea")) result.Add(new(key, name, type.Length == 0 ? null : type, options, i + 1));
             else errors.Add($"{i + 1}행: 토글 형식이 올바르지 않습니다.");
         }
         return result;
@@ -312,93 +311,18 @@ public sealed partial class MainWindow : Window
             if (def.Type == "groupEnd") { if (panels.Count > 1) panels.Pop(); continue; }
             if (def.Type == "caption") { var caption = Text(def.Name, 11, Muted); caption.Tag = new ToggleAddress(def.Line); panels.Peek().Children.Add(caption); continue; }
             if (def.Type == "divider") { var row = new StackPanel { Tag = new ToggleAddress(def.Line), Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 3) }; if (def.Name.Length > 0) row.Children.Add(Text(def.Name, 11, Muted)); row.Children.Add(new Separator { Width = 80, Margin = new Thickness(6, 0, 0, 0) }); panels.Peek().Children.Add(row); continue; }
-            if (!toggleValues.ContainsKey(def.Key)) toggleValues[def.Key] = "";
             var line = new StackPanel { Tag = new ToggleAddress(def.Line), Margin = new Thickness(0, 4, 4, 4) }; line.Children.Add(Text(def.Name, 12));
-            if (def.Type == "select") { var c = new ComboBox { ItemsSource = def.Options, SelectedIndex = int.TryParse(toggleValues[def.Key], out int n) && n >= 0 && n < def.Options.Length ? n : -1 }; c.SelectionChanged += (_, _) => { toggleValues[def.Key] = c.SelectedIndex < 0 ? "" : c.SelectedIndex.ToString(); ToggleValueChanged(); }; line.Children.Add(c); }
-            else if (def.Type is "text" or "textarea") { var t = new TextBox { Text = toggleValues[def.Key], AcceptsReturn = def.Type == "textarea", TextWrapping = TextWrapping.Wrap, MinHeight = def.Type == "textarea" ? 70 : 30, VerticalContentAlignment = VerticalAlignment.Top }; t.TextChanged += (_, _) => { toggleValues[def.Key] = t.Text; ToggleValueChanged(); }; line.Children.Add(t); }
-            else { var c = new CheckBox { Content = def.Name, IsChecked = toggleValues[def.Key] == "1", Margin = new Thickness(0, 4, 0, 4) }; line.Children.Clear(); line.Children.Add(c); c.Click += (_, _) => { toggleValues[def.Key] = c.IsChecked == true ? "1" : "0"; ToggleValueChanged(); }; }
+            string currentValue = toggleValues.GetValueOrDefault(def.Key, "");
+            if (def.Type == "select") { var c = new ComboBox { ItemsSource = def.Options, SelectedIndex = int.TryParse(currentValue, out int n) && n >= 0 && n < def.Options.Length ? n : -1 }; c.SelectionChanged += (_, _) => { toggleValues[def.Key] = c.SelectedIndex < 0 ? "" : c.SelectedIndex.ToString(); ToggleValueChanged(); }; line.Children.Add(c); }
+            else if (def.Type is "text" or "textarea") { var t = new TextBox { Text = currentValue, AcceptsReturn = def.Type == "textarea", TextWrapping = TextWrapping.Wrap, MinHeight = def.Type == "textarea" ? 70 : 30, VerticalContentAlignment = VerticalAlignment.Top }; t.TextChanged += (_, _) => { toggleValues[def.Key] = t.Text; ToggleValueChanged(); }; line.Children.Add(t); }
+            else { var c = new CheckBox { Content = def.Name, IsChecked = currentValue == "1", Margin = new Thickness(0, 4, 0, 4) }; line.Children.Clear(); line.Children.Add(c); c.Click += (_, _) => { toggleValues[def.Key] = c.IsChecked == true ? "1" : "0"; ToggleValueChanged(); }; }
             panels.Peek().Children.Add(line);
         }
     }
     void ToggleValueChanged() { dirty = true; RefreshPromptPreview(); Update(); }
 
     void TogglePromptPreview() { showingPreview = !showingPreview; workScroll.Content = showingPreview ? promptPreview : work; RefreshPromptPreview(); dirty = true; Update(); }
-    void RefreshPromptPreview() { if (showingPreview) promptPreview.Text = BuildPromptPreview(); }
-    string BuildPromptPreview()
-    {
-        var output = new StringBuilder();
-        foreach (var block in blocks)
-        {
-            string type = block.Str("type"); if (type == "cache") continue;
-            if (type == "jailbreak" && !(basis?.Data.Get("jailbreakToggle")?.Boolean() ?? false)) continue;
-            if (type == "cot" && !(basis?.Data.Get("chainOfThought")?.Boolean() ?? false)) continue;
-            string content = type switch
-            {
-                "plain" or "jailbreak" or "cot" or "chatML" => block.Str("text"),
-                "description" => ApplyInner(block, "<캐릭터 설명이 들어갑니다>"), "persona" => ApplyInner(block, "<페르소나가 들어갑니다>"),
-                "lorebook" => "<로어북이 들어갑니다>", "memory" => ApplyInner(block, "<메모리가 들어갑니다>"),
-                "authornote" => ApplyInner(block, string.IsNullOrEmpty(block.Str("defaultText")) ? "<작가의 노트가 들어갑니다>" : block.Str("defaultText")),
-                "chat" => "<채팅 기록이 들어갑니다>", "postEverything" => "<마지막 삽입 영역의 내용이 들어갑니다>", _ => $"<{TypeName(block)} 블록>"
-            };
-            content = EvaluateTemplate(content); if (string.IsNullOrWhiteSpace(content)) continue;
-            string role = type == "chatML" ? "CHATML" : block.Str("role", block.Str("role2", "system")); if (role == "bot") role = "assistant";
-            if (output.Length > 0) output.AppendLine().AppendLine(); output.Append('[').Append(role.ToUpperInvariant()).AppendLine("]").Append(content);
-        }
-        return output.ToString();
-    }
-    static string ApplyInner(Value block, string slot) => string.IsNullOrEmpty(block.Str("innerFormat")) ? slot : block.Str("innerFormat").Replace("{{slot}}", slot);
-    string EvaluateTemplate(string text)
-    {
-        text = Regex.Replace(text, @"\{\{getglobalvar::toggle_([^}]+)\}\}", m => toggleValues.GetValueOrDefault(m.Groups[1].Value, "")); int pos = 0; return ParseSegment(text, ref pos, out _);
-    }
-    string ParseSegment(string text, ref int pos, out string? stop)
-    {
-        var result = new StringBuilder(); stop = null;
-        while (pos < text.Length)
-        {
-            int open = text.IndexOf("{{", pos, StringComparison.Ordinal); if (open < 0) { result.Append(text.AsSpan(pos)); pos = text.Length; break; }
-            result.Append(text.AsSpan(pos, open - pos)); int close = text.IndexOf("}}", open + 2, StringComparison.Ordinal); if (close < 0) { result.Append(text.AsSpan(open)); pos = text.Length; break; }
-            string token = text[(open + 2)..close].Trim(); pos = close + 2;
-            if (token is ":else" or "/" or "/if") { stop = token; return result.ToString(); }
-            if (token.StartsWith("#if ") || token.StartsWith("#if_pure ") || token.StartsWith("#when"))
-            {
-                string truth = ParseSegment(text, ref pos, out string? marker), falsy = ""; if (marker == ":else") falsy = ParseSegment(text, ref pos, out marker); result.Append(EvaluateCondition(token) ? truth : falsy); continue;
-            }
-            result.Append("{{").Append(token).Append("}}");
-        }
-        return result.ToString();
-    }
-    bool EvaluateCondition(string token)
-    {
-        if (token.StartsWith("#if")) { int space = token.IndexOf(' '); return space >= 0 && Truthy(token[(space + 1)..]); }
-        if (token.StartsWith("#when ")) return Truthy(token[6..]);
-        if (!token.StartsWith("#when::")) return false; var statement = token.Split("::").Skip(1).ToList(); if (statement.Count == 1) return Truthy(statement[0]);
-        while (statement.Count > 1)
-        {
-            string condition = Pop(statement), op = Pop(statement);
-            switch (op)
-            {
-                case "not": statement.Add(Truthy(condition) ? "0" : "1"); break;
-                case "keep": case "legacy": statement.Add(condition); break;
-                case "and": statement.Add(Truthy(condition) && Truthy(Pop(statement)) ? "1" : "0"); break;
-                case "or": statement.Add(Truthy(condition) || Truthy(Pop(statement)) ? "1" : "0"); break;
-                case "is": statement.Add(condition == Pop(statement) ? "1" : "0"); break;
-                case "isnot": statement.Add(condition != Pop(statement) ? "1" : "0"); break;
-                case "toggle": statement.Add(Truthy(toggleValues.GetValueOrDefault(condition, "")) ? "1" : "0"); break;
-                case "tis": statement.Add(toggleValues.GetValueOrDefault(Pop(statement), "") == condition ? "1" : "0"); break;
-                case "tisnot": statement.Add(toggleValues.GetValueOrDefault(Pop(statement), "") != condition ? "1" : "0"); break;
-                case ">": statement.Add(Number(Pop(statement)) > Number(condition) ? "1" : "0"); break;
-                case "<": statement.Add(Number(Pop(statement)) < Number(condition) ? "1" : "0"); break;
-                case ">=": statement.Add(Number(Pop(statement)) >= Number(condition) ? "1" : "0"); break;
-                case "<=": statement.Add(Number(Pop(statement)) <= Number(condition) ? "1" : "0"); break;
-                default: statement.Add(Truthy(condition) ? "1" : "0"); break;
-            }
-        }
-        return statement.Count > 0 && Truthy(statement[0]);
-    }
-    static string Pop(List<string> list) { if (list.Count == 0) return ""; string v = list[^1]; list.RemoveAt(list.Count - 1); return v; }
-    static bool Truthy(string value) => value is "1" or "true";
-    static double Number(string value) => double.TryParse(value, out double n) ? n : double.NaN;
+    void RefreshPromptPreview() { if (showingPreview) RenderPromptPreview(PromptPreviewEngine.Build(blocks, basis, toggleValues)); }
 
     EditorProject CaptureProject()
     {
@@ -441,7 +365,7 @@ public sealed partial class MainWindow : Window
         try { var output = basis.Clone(); output.Data.Set("name", Value.String(name.Text.Trim())); output.Data.Set("promptTemplate", Value.Array(blocks.Select(v => v.Clone()))); output.Data.Set("customPromptTemplateToggle", Value.String(customToggleText)); RisupCodec.Save(output, save.FileName); Update("내보내기 완료: " + save.FileName); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "내보내기 실패", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
     Window Dialog(string title, int width, int height, out StackPanel panel) { panel = new StackPanel { Margin = new Thickness(24) }; return new Window { Title = title, Width = width, Height = height, Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, Content = panel }; }
-    void About() { var d = Dialog("Risup Editor 정보", 690, 530, out var p); p.Children.Add(Text("Risup Editor 0.2.0", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글 편집기 · AGPL-3.0", 13, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader = new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 360, Margin = new Thickness(0, 15, 0, 0) }); d.ShowDialog(); }
+    void About() { var d = Dialog("Risup Editor 정보", 690, 530, out var p); p.Children.Add(Text("Risup Editor 0.3.0", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글 편집기 · AGPL-3.0", 13, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 360, Margin = new Thickness(0, 15, 0, 0) }); d.ShowDialog(); }
 
     public async void RunSelfTest(string folder)
     {
@@ -452,7 +376,8 @@ public sealed partial class MainWindow : Window
             if (blocks.Count != references[0].Blocks!.Count) throw new Exception("tab copy"); string original = references[0].Blocks![0].Str("text"); var textbox = Descendants<TextBox>(workCards[blocks[0]]).First(); textbox.Text = "UI 편집 테스트";
             if (blocks[0].Str("text") != "UI 편집 테스트" || references[0].Blocks![0].Str("text") != original) throw new Exception("editing/reference isolation"); Undo(); Redo();
             var moved = blocks[0]; Move(moved, 1); Undo(); referenceIndex = 0; int count = blocks.Count; Copy(false); Undo(); Duplicate(blocks[0]); Delete(blocks[selected]); Undo(); Undo();
-            customToggleText = "cot=COT 토글\nstyle=문체=select=간결,상세\nnote=메모=text\narea=지시=textarea"; SetToggleEditor(); RenderTogglePreview(); toggleValues["cot"] = "1"; blocks[0].Set("text", Value.String("A{{#when::toggle::cot}}ON{{:else}}OFF{{/}}B")); showingPreview = true; workScroll.Content = promptPreview; RefreshPromptPreview(); if (!promptPreview.Text.Contains("AONB") || promptPreview.Text.Contains("OFF")) throw new Exception("toggle prompt preview"); blocks[0].Set("text", Value.String("UI 편집 테스트"));
+            customToggleText = "cot=COT 토글\nstyle=문체=select=간결,상세\nnote=메모=text\narea=지시=textarea"; SetToggleEditor(); RenderTogglePreview(); toggleValues["cot"] = "1"; blocks[0].Set("text", Value.String("A{{#when::toggle::cot}}ON{{:else}}OFF{{/}}B")); showingPreview = true; workScroll.Content = promptPreview; RefreshPromptPreview(); string previewText = PromptPreviewEngine.Build(blocks, basis, toggleValues).PlainText; if (!previewText.Contains("AONB") || previewText.Contains("OFF")) throw new Exception("toggle prompt preview"); blocks[0].Set("text", Value.String("UI 편집 테스트")); RefreshPromptPreview();
+            await Task.Delay(100); UpdateLayout(); var previewSurface = (FrameworkElement)Content; var previewBitmap = new RenderTargetBitmap((int)previewSurface.ActualWidth, (int)previewSurface.ActualHeight, 96, 96, PixelFormats.Pbgra32); previewBitmap.Render(previewSurface); var previewPng = new PngBitmapEncoder(); previewPng.Frames.Add(BitmapFrame.Create(previewBitmap)); using (var file = File.Create(Path.Combine(folder, "prompt-preview.png"))) previewPng.Save(file);
             string project = Path.Combine(folder, "ui-project.risupproj"); ProjectFile.Save(CaptureProject(), project); var loaded = ProjectFile.Load(project); if (loaded.ToggleText != customToggleText || loaded.References.Count != 10 || loaded.Blocks.Count != blocks.Count || loaded.ToggleValues["cot"] != "1") throw new Exception("project roundtrip");
             var output = basis!.Clone(); output.Data.Set("promptTemplate", Value.Array(blocks.Select(v => v.Clone()))); output.Data.Set("customPromptTemplateToggle", Value.String(customToggleText)); RisupCodec.Save(output, Path.Combine(folder, "ui-output.risup")); var reopened = RisupCodec.Load(Path.Combine(folder, "ui-output.risup")); if (reopened.Data.Str("customPromptTemplateToggle") != customToggleText) throw new Exception("toggle export");
             showingPreview = false; workScroll.Content = work; RenderWork(); collapsedWork.Add(blocks[1]); RenderWork(); if (Descendants<TextBox>(workCards[blocks[0]]).First().VerticalScrollBarVisibility != ScrollBarVisibility.Disabled) throw new Exception("block textbox scrollbar");
