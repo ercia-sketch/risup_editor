@@ -1,0 +1,24 @@
+# Local .NET SDK, caches, and temporary files
+/tools/
+
+# Build and publish outputs
+/artifacts/
+/src/bin/
+/src/obj/
+
+# Generated test outputs
+/tests/*.out.risup
+/tests/edited.risup
+/tests/ui-output.risup
+/tests/ui-project.risupproj
+/tests/*-result.txt
+/tests/*-preview.png
+
+# IDE and user-specific files
+/.vs/
+*.user
+*.suo
+
+# Windows metadata
+Thumbs.db
+Desktop.ini
