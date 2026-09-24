@@ -80,20 +80,20 @@ internal static class PromptPreviewEngine
                     AddChatMl(entries, block.Str("text"), evaluator, warningSet);
                     break;
                 case "description":
-                    AddMessage(entries, Role(block.Str("role2", "system")), evaluator.Evaluate(ApplySlot(block.Str("innerFormat"), Marker("캐릭터 설명이 이 위치에 들어갑니다"))));
+                    AddMessage(entries, Role(block.Str("role2", "system")), ApplySlot(evaluator.Evaluate(block.Str("innerFormat")), Marker("캐릭터 설명이 이 위치에 들어갑니다")));
                     break;
                 case "persona":
-                    AddMessage(entries, Role(block.Str("role2", "system")), evaluator.Evaluate(ApplySlot(block.Str("innerFormat"), Marker("페르소나가 이 위치에 들어갑니다"))));
+                    AddMessage(entries, Role(block.Str("role2", "system")), ApplySlot(evaluator.Evaluate(block.Str("innerFormat")), Marker("페르소나가 이 위치에 들어갑니다")));
                     break;
                 case "memory":
-                    AddMessage(entries, Role(block.Str("role2", "system")), evaluator.Evaluate(ApplySlot(block.Str("innerFormat"), Marker("메모리가 이 위치에 들어갑니다"))));
+                    AddMessage(entries, Role(block.Str("role2", "system")), ApplySlot(evaluator.Evaluate(block.Str("innerFormat")), Marker("메모리가 이 위치에 들어갑니다")));
                     break;
                 case "authornote":
                 {
                     string label = string.IsNullOrEmpty(block.Str("defaultText"))
                         ? "작가의 노트가 이 위치에 들어갑니다"
                         : $"작가의 노트가 이 위치에 들어갑니다 · 기본값: {block.Str("defaultText")}";
-                    AddMessage(entries, Role(block.Str("role2", "system")), evaluator.Evaluate(ApplySlot(block.Str("innerFormat"), Marker(label))));
+                    AddMessage(entries, Role(block.Str("role2", "system")), ApplySlot(evaluator.Evaluate(block.Str("innerFormat")), Marker(label)));
                     break;
                 }
                 case "lorebook":
@@ -218,6 +218,20 @@ internal static class PromptPreviewEngine
 internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> toggles, bool jailbreak, HashSet<string> warnings)
 {
     sealed record InlineResult(string Text, bool Unknown);
+    static readonly HashSet<string> RuntimeFunctions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "addvar", "asset", "assetlist", "audio", "authornote", "axmodel", "bg", "bgm", "bkspc", "button", "calc", "char",
+        "chardisplayasset", "charhistory", "chatindex", "date", "declare", "description", "dice", "emotion", "emotionlist", "erase",
+        "exampledialogue", "file", "firstmsgindex", "getvar", "globalnote", "hash", "history", "idleduration", "image", "img", "inlay",
+        "inlayed", "inlayeddata", "isfirstmsg", "isodate", "isotime", "jb", "lastmessage", "lastmessageid", "lorebook", "mainprompt",
+        "maxcontext", "messagedate", "messageidleduration", "messagetime", "messageunixtimearray", "metadata", "model", "moduleassetlist",
+        "moduleenabled", "path", "persona", "personality", "pick", "position", "prefillsupported", "previouscharchat", "previouschatlog",
+        "previoususerchat", "randint", "random", "return", "risu", "role", "roll", "rollp", "scenario", "screenheight", "screenwidth",
+        "setdefaultvar", "settempvar", "setvar", "source", "tempvar", "time", "triggerid", "unixtime", "user", "userhistory", "video", "videoimg",
+        "bot", "chardesc", "charmessages", "charpersona", "datetimeformat", "examplemessage", "firstmessageindex", "gettempvar",
+        "isfirstmessage", "jailbreak", "lastcharmessage", "lastmessageindex", "lastusermessage", "messages", "prefill", "raw",
+        "systemnote", "systemprompt", "ujb", "usermessages", "userpersona", "worldinfo"
+    };
 
     public string Evaluate(string text)
     {
@@ -236,6 +250,54 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
             if (!ReadToken(source, open, out string token, out int after)) { output.Append(source.AsSpan(open)); position = source.Length; break; }
             position = after; string trimmed = token.Trim();
             if (trimmed == ":else" || (trimmed.StartsWith('/') && !trimmed.StartsWith("//"))) { stop = trimmed; return output.ToString(); }
+
+            if (trimmed is "#pure" or "#puredisplay" or "#pure_display" || trimmed.StartsWith("#escape", StringComparison.Ordinal))
+            {
+                string close = trimmed.StartsWith("#escape", StringComparison.Ordinal) ? "escape" : trimmed is "#pure" ? "pure" : trimmed[1..].Replace("_", "", StringComparison.Ordinal);
+                if (!TryReadRawBlock(source, ref position, close, out string body))
+                {
+                    warnings.Add($"닫히지 않은 CBS '{{{{{trimmed}}}}}' 블록은 원문으로 보존했습니다."); output.Append(PromptPreviewEngine.Marker(source[open..position], 'w')); continue;
+                }
+                bool keep = trimmed.Contains("::keep", StringComparison.Ordinal); output.Append(keep ? body : body.Trim()); continue;
+            }
+
+            if (trimmed.StartsWith("#each", StringComparison.Ordinal))
+            {
+                int originalStart = open;
+                if (!TryReadRawBlock(source, ref position, "each", out string body))
+                {
+                    warnings.Add("닫히지 않은 CBS #each 블록은 원문으로 보존했습니다."); output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); continue;
+                }
+                string header = trimmed[5..].Trim(); bool keep = false;
+                if (header.StartsWith("::keep ", StringComparison.Ordinal)) { keep = true; header = header[7..].Trim(); }
+                int asIndex = header.LastIndexOf(" as ", StringComparison.Ordinal); if (asIndex < 0) asIndex = header.LastIndexOf(' ');
+                if (asIndex <= 0)
+                {
+                    output.Append(PreserveSource(source[originalStart..position], "CBS #each의 배열과 슬롯 이름을 해석하지 못했습니다.").Text); continue;
+                }
+                string arraySource = header[..asIndex], slot = header[(asIndex + (header.AsSpan(asIndex).StartsWith(" as ") ? 4 : 1))..].Trim();
+                var resolvedArray = ResolveInlineText(arraySource);
+                if (resolvedArray.Unknown || !RisuStaticCbs.TryParseArrayValues(resolvedArray.Text, out var values))
+                {
+                    output.Append(PreserveSource(source[originalStart..position], "CBS #each의 배열은 현재 프리셋만으로 계산할 수 없습니다.").Text); continue;
+                }
+                string template = keep ? body : TrimLines(body);
+                string expanded = string.Concat(values.Select(value => template.Replace($"{{{{slot::{slot}}}}}", value, StringComparison.Ordinal)));
+                output.Append(keep ? Evaluate(expanded) : Evaluate(expanded).Trim()); continue;
+            }
+
+            if (trimmed.StartsWith("#if_pure ", StringComparison.Ordinal))
+            {
+                int originalStart = open;
+                if (!TryReadRawBlock(source, ref position, "if_pure", out string body))
+                {
+                    warnings.Add("닫히지 않은 CBS #if_pure 블록은 원문으로 보존했습니다."); output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); continue;
+                }
+                var resolved = ResolveInlineText(trimmed); bool? condition = EvaluateCondition(resolved.Text, resolved.Unknown, out _);
+                if (condition is null) { output.Append(PreserveSource(source[originalStart..position], "CBS #if_pure 조건은 현재 프리셋만으로 계산할 수 없습니다.").Text); continue; }
+                int elseIndex = body.IndexOf("{{:else}}", StringComparison.Ordinal);
+                output.Append(condition.Value ? (elseIndex < 0 ? body : body[..elseIndex]) : (elseIndex < 0 ? "" : body[(elseIndex + 9)..])); continue;
+            }
 
             if (IsConditional(trimmed))
             {
@@ -281,6 +343,23 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
         token = ""; after = source.Length; return false;
     }
 
+    static bool TryReadRawBlock(string source, ref int position, string closeName, out string body)
+    {
+        int contentStart = position, scan = position, depth = 1;
+        while (scan < source.Length)
+        {
+            int open = source.IndexOf("{{", scan, StringComparison.Ordinal); if (open < 0 || !ReadToken(source, open, out string token, out int after)) break;
+            string trimmed = token.Trim(), normalized = trimmed.Replace("_", "", StringComparison.Ordinal);
+            if (normalized.StartsWith("#" + closeName.Replace("_", "", StringComparison.Ordinal), StringComparison.Ordinal)) depth++;
+            else if (normalized.StartsWith("/" + closeName.Replace("_", "", StringComparison.Ordinal), StringComparison.Ordinal) && --depth == 0)
+            {
+                body = source[contentStart..open]; position = after; return true;
+            }
+            scan = after;
+        }
+        body = source[contentStart..]; position = source.Length; return false;
+    }
+
     static bool IsConditional(string token) => token.StartsWith("#if ") || token.StartsWith("#if_pure ") || token.StartsWith("#when");
 
     InlineResult ResolveInlineText(string text)
@@ -299,26 +378,77 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
 
     InlineResult ResolveInlineToken(string token)
     {
-        string normalized = token.Split(':', 2)[0].ToLowerInvariant().Replace("_", "").Replace("-", "").Replace(" ", "");
-        if (normalized == "getglobalvar")
+        if (token.StartsWith("? ", StringComparison.Ordinal))
+            return RisuStaticCbs.TryCalculate(token[2..], out string calculation) ? new(calculation, false) : Preserve(token, "수식 CBS를 계산하지 못했습니다.");
+        var pieces = SplitToken(token);
+        string name = RisuStaticCbs.Normalize(pieces[0]);
+        if (name == "getglobalvar")
         {
-            string[] pieces = token.Contains("::", StringComparison.Ordinal) ? token.Split("::") : token.Split(':');
-            string key = pieces.ElementAtOrDefault(1) ?? "";
-            if (key.StartsWith("toggle_", StringComparison.Ordinal))
-            {
-                string toggle = key[7..]; return new(toggles.TryGetValue(toggle, out string? value) ? value : "null", false);
-            }
+            var keyResult = pieces.Count > 1 ? ResolveInlineText(pieces[1]) : new InlineResult("", false);
+            if (keyResult.Unknown) return Preserve(token, "전역 변수 이름을 현재 프리셋만으로 결정할 수 없습니다.");
+            string key = keyResult.Text;
+            if (TryToggleValue(key, out string value)) return new(value, false);
+            if (LooksLikeToggleKey(key)) return new("null", false);
             warnings.Add($"전역 변수 '{key}'는 편집기에 런타임 값이 없어 원문으로 보존했습니다.");
-            return new("{{" + token + "}}", true);
+            return new(PromptPreviewEngine.Marker("{{" + token + "}}", 'w'), true);
         }
-        if (normalized == "jbtoggled") return new(jailbreak ? "1" : "0", false);
-        if (token == "user") return new(PromptPreviewEngine.Marker("{{user}}", 'u'), true);
-        if (token == "char") return new(PromptPreviewEngine.Marker("{{char}}", 'c'), true);
-        if (token == "maxcontext") return new(PromptPreviewEngine.Marker("{{maxcontext}}", 'm'), true);
-        if (token.StartsWith("roll::", StringComparison.Ordinal)) return new(PromptPreviewEngine.Marker("{{" + token + "}}", 'r'), true);
-        if (token == "slot" || token.StartsWith("slot::", StringComparison.Ordinal)) return new("{{" + token + "}}", false);
-        warnings.Add($"CBS '{{{{{token}}}}}'은 런타임 값이나 RisuAI 전체 파서가 필요해 원문으로 보존했습니다.");
-        return new(PromptPreviewEngine.Marker("{{" + token + "}}", 'w'), true);
+        if (name == "jbtoggled") return new(jailbreak ? "1" : "0", false);
+        if (name == "user" && pieces.Count == 1) return new(PromptPreviewEngine.Marker("{{user}}", 'u'), true);
+        if (name == "char" && pieces.Count == 1) return new(PromptPreviewEngine.Marker("{{char}}", 'c'), true);
+        if (name == "maxcontext" && pieces.Count == 1) return new(PromptPreviewEngine.Marker("{{maxcontext}}", 'm'), true);
+        if (name is "roll" or "rollp" or "rollpick" or "dice" or "random" or "randint" or "pick")
+            return new(PromptPreviewEngine.Marker("{{" + token + "}}", 'r'), true);
+        if (name == "slot") return new("{{" + token + "}}", false);
+
+        var args = new List<string>();
+        for (int i = 1; i < pieces.Count; i++)
+        {
+            var resolved = ResolveInlineText(pieces[i]);
+            if (resolved.Unknown) return Preserve(token, $"CBS '{{{{{name}}}}}'의 인수에 현재 프리셋만으로 정할 수 없는 값이 있습니다.");
+            args.Add(resolved.Text);
+        }
+        if (RisuStaticCbs.TryEvaluate(name, args, out string result)) return new(result, false);
+        if (RuntimeFunctions.Contains(name)) return Preserve(token, $"CBS '{{{{{name}}}}}'은 캐릭터·채팅·시간·모듈 같은 RisuAI 실행 상태가 필요합니다.");
+        return Preserve(token, $"CBS '{{{{{name}}}}}'은 이 미리보기에서 아직 계산하지 못합니다.");
+    }
+
+    InlineResult Preserve(string token, string warning)
+    {
+        warnings.Add(warning); return new(PromptPreviewEngine.Marker("{{" + token + "}}", 'w'), true);
+    }
+
+    InlineResult PreserveSource(string source, string warning)
+    {
+        warnings.Add(warning); return new(PromptPreviewEngine.Marker(source, 'w'), true);
+    }
+
+    bool TryToggleValue(string key, out string value)
+    {
+        string normalized = key.Replace("\\_", "_", StringComparison.Ordinal);
+        if (!normalized.StartsWith("toggle_", StringComparison.Ordinal)) { value = ""; return false; }
+        return toggles.TryGetValue(normalized[7..], out value!);
+    }
+
+    static bool LooksLikeToggleKey(string key) => key.Replace("\\_", "_", StringComparison.Ordinal).StartsWith("toggle_", StringComparison.Ordinal);
+
+    static List<string> SplitToken(string token)
+    {
+        var result = new List<string>(); int start = 0, depth = 0;
+        for (int i = 0; i < token.Length; i++)
+        {
+            if (i + 1 < token.Length && token[i] == '{' && token[i + 1] == '{') { depth++; i++; continue; }
+            if (i + 1 < token.Length && token[i] == '}' && token[i + 1] == '}') { depth = Math.Max(0, depth - 1); i++; continue; }
+            if (depth == 0 && i + 1 < token.Length && token[i] == ':' && token[i + 1] == ':')
+            {
+                result.Add(token[start..i]); start = i + 2; i++;
+            }
+        }
+        result.Add(token[start..]);
+        if (result.Count == 1 && token.Contains(':'))
+        {
+            int separator = token.IndexOf(':'); result.Clear(); result.Add(token[..separator]); result.Add(token[(separator + 1)..]);
+        }
+        return result;
     }
 
     bool? EvaluateCondition(string token, bool unknown, out string mode)
@@ -455,7 +585,7 @@ public sealed partial class MainWindow
                 case 'c': AddRun(label, new SolidColorBrush(Color.FromRgb(37, 99, 235))); break;
                 case 'm': AddRun(label, new SolidColorBrush(Color.FromRgb(202, 138, 4))); break;
                 case 'r': AddRun(label, new SolidColorBrush(Color.FromRgb(22, 163, 74))); break;
-                case 'w': AddRun(label, new SolidColorBrush(Color.FromRgb(194, 65, 12)), new SolidColorBrush(Color.FromRgb(255, 247, 237)), "RisuAI 런타임 값 또는 전체 파서가 필요한 표현입니다."); break;
+                case 'w': AddRun(label, new SolidColorBrush(Color.FromRgb(194, 65, 12)), new SolidColorBrush(Color.FromRgb(255, 247, 237)), "현재 프리셋만으로 값을 결정할 수 없어 원문을 표시했습니다."); break;
                 default: AddRun(label, new SolidColorBrush(Color.FromRgb(13, 110, 102)), new SolidColorBrush(Color.FromRgb(230, 247, 244)), style: FontStyles.Italic); break;
             }
             position = end + 1;

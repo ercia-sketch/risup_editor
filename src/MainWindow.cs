@@ -258,10 +258,11 @@ public sealed partial class MainWindow : Window
         var subtitle = new TextBlock { Text = Subtitle(block), Foreground = Muted, FontSize = 11, Margin = new Thickness(0, 5, 0, 10) }; details.Children.Add(subtitle);
         if (editable) refreshHeaders[block] = () => { title.Text = $"{blocks.IndexOf(block) + 1:00}   {Label(block)}"; subtitle.Text = Subtitle(block); };
         if (Plain(block)) details.Children.Add(Field(block, "text", editable, true));
+        else if (Inner(block)) AddField(details, "내부 형식 · 첫 {{slot}} 자리에 해당 내용을 삽입", block, "innerFormat", editable, true);
         else details.Children.Add(new Border { Background = new SolidColorBrush(Color.FromRgb(239, 246, 246)), Padding = new Thickness(14), CornerRadius = new CornerRadius(5), Child = Text(Placeholder(block), 13, Accent) });
         var settings = new StackPanel { Margin = new Thickness(0, 8, 0, 0) }; AddField(settings, "블록 이름", block, "name", editable);
         if (block.Str("type") is "plain" or "jailbreak" or "cot") { AddChoice(settings, "역할", block, "role", ["system", "user", "bot"], editable); AddChoice(settings, "구분", block, "type2", ["normal", "main", "globalNote"], editable); }
-        if (Inner(block)) { AddChoice(settings, "역할", block, "role2", ["system", "user", "bot"], editable); AddField(settings, "내부 형식 · {{slot}} 자리에 내용 삽입", block, "innerFormat", editable, true); }
+        if (Inner(block)) AddChoice(settings, "역할", block, "role2", ["system", "user", "bot"], editable);
         if (block.Str("type") == "authornote") AddField(settings, "기본 작가의 노트", block, "defaultText", editable, true);
         if (block.Str("type") == "chat") { AddNumber(settings, "시작 범위 · -1000은 전체 기록", block, "rangeStart", editable); AddNumber(settings, "끝 범위 · end는 마지막까지", block, "rangeEnd", editable, true); AddBool(settings, "시스템 채팅에서 원래 역할 유지", block, "chatAsOriginalOnSystem", editable); }
         if (block.Str("type") == "cache") { AddNumber(settings, "깊이", block, "depth", editable); AddChoice(settings, "역할", block, "role", ["all", "user", "assistant", "system"], editable); }
@@ -296,7 +297,7 @@ public sealed partial class MainWindow : Window
     void AddBlock()
     {
         var d = Dialog("새 블록", 400, 240, out var p); p.Children.Add(Text("추가할 블록 유형을 선택하세요.", 15)); var c = new ComboBox { ItemsSource = Types.ToList(), DisplayMemberPath = "Value", SelectedIndex = 0, Margin = new Thickness(0, 16, 0, 16) }; p.Children.Add(c); p.Children.Add(Button("추가", () => d.DialogResult = true, true)); if (d.ShowDialog() != true) return;
-        string key = ((KeyValuePair<string, string>)c.SelectedItem).Key; var b = Value.Map(); b.Set("type", Value.String(key)); if (Plain(b)) { b.Set("text", Value.String("")); if (key != "chatML") { b.Set("role", Value.String("system")); b.Set("type2", Value.String("normal")); } } if (Inner(b)) b.Set("role2", Value.String("system")); if (key == "chat") { b.Set("rangeStart", Value.Int(-1000)); b.Set("rangeEnd", Value.String("end")); } if (key == "cache") { b.Set("depth", Value.Int(1)); b.Set("role", Value.String("all")); b.Set("name", Value.String("캐시 지점")); }
+        string key = ((KeyValuePair<string, string>)c.SelectedItem).Key; var b = Value.Map(); b.Set("type", Value.String(key)); if (Plain(b)) { b.Set("text", Value.String("")); if (key != "chatML") { b.Set("role", Value.String("system")); b.Set("type2", Value.String("normal")); } } if (Inner(b)) { b.Set("role2", Value.String("system")); b.Set("innerFormat", Value.String("{{slot}}")); } if (key == "authornote") b.Set("defaultText", Value.String("")); if (key == "chat") { b.Set("rangeStart", Value.Int(-1000)); b.Set("rangeEnd", Value.String("end")); } if (key == "cache") { b.Set("depth", Value.Int(1)); b.Set("role", Value.String("all")); b.Set("name", Value.String("캐시 지점")); }
         Remember(); int at = selected >= 0 ? selected + 1 : blocks.Count; blocks.Insert(at, b); selected = at; dirty = true; RenderWork(); FocusSelected(); Update("새 블록을 추가했습니다.");
     }
 
@@ -440,7 +441,7 @@ public sealed partial class MainWindow : Window
         try { var output = basis.Clone(); output.Data.Set("name", Value.String(name.Text.Trim())); output.Data.Set("promptTemplate", Value.Array(blocks.Select(v => v.Clone()))); output.Data.Set("customPromptTemplateToggle", Value.String(customToggleText)); output.Data.Set("regex", Value.Array(regexScripts.Select(v => v.Clone()))); RisupCodec.Save(output, save.FileName); Update("내보내기 완료: " + save.FileName); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "내보내기 실패", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
     Window Dialog(string title, int width, int height, out StackPanel panel) { panel = new StackPanel { Margin = new Thickness(24) }; return new Window { Title = title, Width = width, Height = height, Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, Content = panel }; }
-    void About() { var d = Dialog("Risup Editor 정보", 690, 530, out var p); p.Children.Add(Text("Risup Editor 0.5.1", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글 편집기 · AGPL-3.0", 13, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 360, Margin = new Thickness(0, 15, 0, 0) }); d.ShowDialog(); }
+    void About() { var d = Dialog("Risup Editor 정보", 690, 530, out var p); p.Children.Add(Text("Risup Editor 0.6.0", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글 편집기 · AGPL-3.0", 13, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 360, Margin = new Thickness(0, 15, 0, 0) }); d.ShowDialog(); }
 
     public async void RunSelfTest(string folder)
     {
