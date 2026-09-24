@@ -285,7 +285,7 @@ public sealed partial class MainWindow : Window
         else details.Children.Add(new Border { Background = new SolidColorBrush(Color.FromRgb(239, 246, 246)), Padding = new Thickness(14), CornerRadius = new CornerRadius(5), Margin = new Thickness(0, 8, 0, 0), Child = Text(Placeholder(block), 13, Accent) });
         var settings = new StackPanel(); var settingsExpander = new Expander { Header = "원본 추가 필드", Content = settings, Margin = new Thickness(0, 10, 0, 0), Visibility = Visibility.Collapsed }; details.Children.Add(settingsExpander); stack.Children.Add(details);
         card.Tag = new BlockView(block, details, settings, settingsExpander, collapsed);
-        card.PreviewMouseLeftButtonDown += (_, e) => { if (IsInteractive(e.OriginalSource as DependencyObject, card)) return; if (collapsed.Remove(block)) details.Visibility = Visibility.Visible; else { collapsed.Add(block); details.Visibility = Visibility.Collapsed; } dirty = editable || dirty; Update(); };
+        card.PreviewMouseLeftButtonDown += (_, e) => { if (IsInteractive(e.OriginalSource as DependencyObject, card) || LogicalDescendants<ComboBox>(card).Any(combo => combo.IsDropDownOpen)) return; if (collapsed.Remove(block)) details.Visibility = Visibility.Visible; else { collapsed.Add(block); details.Visibility = Visibility.Collapsed; } dirty = editable || dirty; Update(); };
         var badge = Text("", 11, Muted); badge.Margin = new Thickness(6, 0, 0, 0); top.Children.Add(badge);
         var editors = Descendants<SyntaxBox>(stack).Where(t => t.EnableDiagnostics).ToArray();
         void RefreshBadge() { int count = editors.Sum(t => t.Diagnostics.Count); badge.Text = count == 0 ? "" : $"진단 {count}"; }
@@ -295,7 +295,7 @@ public sealed partial class MainWindow : Window
     }
     static string Subtitle(Value b) => TypeName(b) + (b.Str("role", b.Str("role2")) is { Length: > 0 } role ? "  ·  " + role : "");
     static string Placeholder(Value b) => b.Str("type") switch { "chat" => $"이 자리에 채팅 기록이 들어갑니다.\n범위: {Display(b.Get("rangeStart"))} → {Display(b.Get("rangeEnd"))}", "cache" => "이 위치에 캐시 지점이 설정됩니다.", "postEverything" => "이 자리에 마지막 삽입 영역의 내용이 들어갑니다.", _ => Types.ContainsKey(b.Str("type")) ? $"이 자리에 {TypeName(b)} 내용이 들어갑니다." : "알 수 없는 블록 유형입니다. 원본 설정을 보존합니다." };
-    static bool IsInteractive(DependencyObject? source, DependencyObject card) { for (var p = source; p is not null && p != card; p = VisualTreeHelper.GetParent(p)) if (p is TextBox or ButtonBase or ComboBox or Expander or ScrollBar or Thumb) return true; return false; }
+    static bool IsInteractive(DependencyObject? source, DependencyObject card) { for (var p = source; p is not null && p != card; p = VisualTreeHelper.GetParent(p)) if (p is TextBox or ButtonBase or ComboBox or ComboBoxItem or Expander or ScrollBar or Thumb) return true; return false; }
     static string Display(Value? v) => v?.Text() ?? v?.Number()?.ToString() ?? "미지정";
     TextBox Field(Value b, string key, bool edit, bool multi)
     {
@@ -497,7 +497,7 @@ public sealed partial class MainWindow : Window
         try { var output = basis.Clone(); output.Data.Set("name", Value.String(name.Text.Trim())); output.Data.Set("promptTemplate", Value.Array(blocks.Select(v => v.Clone()))); output.Data.Set("customPromptTemplateToggle", Value.String(customToggleText)); output.Data.Set("regex", Value.Array(regexScripts.Select(v => v.Clone()))); RisupCodec.Save(output, save.FileName); Update("내보내기 완료: " + save.FileName); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "내보내기 실패", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
     Window Dialog(string title, int width, int height, out StackPanel panel) { panel = new StackPanel { Margin = new Thickness(24) }; return new Window { Title = title, Width = width, Height = height, Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, Content = panel }; }
-    void About() { var d = Dialog("Risup Editor 정보", 690, 530, out var p); p.Children.Add(Text("Risup Editor 0.6.1", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글 편집기 · AGPL-3.0", 13, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 360, Margin = new Thickness(0, 15, 0, 0) }); d.ShowDialog(); }
+    void About() { var d = Dialog("Risup Editor 정보", 690, 530, out var p); p.Children.Add(Text("Risup Editor 0.6.2", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글 편집기 · AGPL-3.0", 13, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 360, Margin = new Thickness(0, 15, 0, 0) }); d.ShowDialog(); }
 
     public async void RunSelfTest(string folder)
     {
