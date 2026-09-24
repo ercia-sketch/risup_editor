@@ -212,14 +212,11 @@ public sealed partial class MainWindow
         var target = LogicalDescendants<FrameworkElement>(card).FirstOrDefault(e => e.Tag is FieldAddress a && ReferenceEquals(a.Owner, block) && a.Key == field);
         if (target is not null && !key)
         {
-            view.SettingsExpander.IsExpanded = field != "text";
             MarkSearch(target, start, length); return;
         }
-        view.SettingsExpander.IsExpanded = true;
-        var extra = view.Settings.Children.OfType<Expander>().FirstOrDefault(e => Equals(e.Tag, "SearchBlockFields"));
-        if (extra is null) { var body = new StackPanel(); extra = new Expander { Header = "추가 블록 필드", Tag = "SearchBlockFields", Content = body }; view.Settings.Children.Add(extra); }
-        ((Panel)extra.Content).Children.Clear(); BuildValues((Panel)extra.Content, block, false);
-        extra.IsExpanded = true; LocateValue((Panel)extra.Content, path, key, start, length);
+        view.Settings.Children.Clear(); BuildValues(view.Settings, block, false);
+        view.SettingsExpander.Visibility = Visibility.Visible; view.SettingsExpander.IsExpanded = true;
+        LocateValue(view.Settings, path, key, start, length);
     }
     void LocateValue(Panel root, int[] path, bool key, int start, int length)
     {

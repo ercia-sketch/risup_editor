@@ -20,13 +20,13 @@ public sealed partial class MainWindow
             var card = workCards[block]; var view = (BlockView)card.Tag;
             if (view.Details.Visibility != Visibility.Collapsed) throw new Exception("fixture not collapsed");
             var workPane = searchPanes[1]; workPane.Bar.Visibility = Visibility.Visible; workPane.Query.Text = "검색대상_숨김"; workPane.Timer.Stop(); await RefreshSearch(1); UpdateLayout();
-            if (workPane.Hits.Count != 1 || view.Details.Visibility != Visibility.Visible || !view.SettingsExpander.IsExpanded) throw new Exception("hidden block navigation failed");
+            if (workPane.Hits.Count != 1 || view.Details.Visibility != Visibility.Visible) throw new Exception("hidden block navigation failed");
             var editor = LogicalDescendants<SyntaxBox>(card).First(t => t.Tag is FieldAddress a && a.Key == "innerFormat");
             if (editor.SelectedText != "검색대상_숨김") throw new Exception("search selection failed");
-            await Task.Delay(150); view.SettingsExpander.IsExpanded = false; UpdateLayout(); await Task.Delay(80);
+            await Task.Delay(150); view.Details.Visibility = Visibility.Collapsed; UpdateLayout(); await Task.Delay(80);
             var layer = AdornerLayer.GetAdornerLayer(editor); var adorners = layer?.GetAdorners(editor) ?? [];
             if (editor.IsVisible || adorners.Any(a => a.Visibility == Visibility.Visible)) throw new Exception("collapsed decoration still visible");
-            view.SettingsExpander.IsExpanded = true; UpdateLayout(); await Task.Delay(100);
+            view.Details.Visibility = Visibility.Visible; UpdateLayout(); await Task.Delay(100);
             if (!editor.IsVisible || !(layer?.GetAdorners(editor)?.Any(a => a.Visibility == Visibility.Visible) ?? false)) throw new Exception("expanded decoration missing");
             workPane.Query.Text = "검색대상_중첩"; workPane.Timer.Stop(); await RefreshSearch(1); UpdateLayout();
             if (workPane.Hits.Count != 1 || !LogicalDescendants<TextBox>(work).Any(t => t.SelectedText == "검색대상_중첩" && t.IsVisible)) throw new Exception("nested data search failed");

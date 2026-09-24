@@ -42,6 +42,7 @@ public sealed partial class MainWindow : Window
     record Snapshot(List<Value> Blocks, List<Value> Regex, Preset? Basis, string ToggleText, Dictionary<string, string> ToggleValues, HashSet<int> Collapsed, int Selected);
     record ToggleDef(string Key, string Name, string? Type, string[] Options, int Line);
     record ToggleNode(ToggleDef Def, List<ToggleDef>? Children);
+    record ChoiceItem(string Value, string Label);
 
     static Brush Ink => new SolidColorBrush(Color.FromRgb(36, 51, 69));
     static Brush Muted => new SolidColorBrush(Color.FromRgb(105, 121, 140));
@@ -224,7 +225,7 @@ public sealed partial class MainWindow : Window
         if (incoming.Count == 0) return; Remember(); EnsureBasis(preset); int at = selected >= 0 ? selected + 1 : blocks.Count; blocks.InsertRange(at, incoming.Select(v => v.Clone())); selected = at; dirty = true; RenderWork(); FocusSelected(); Update($"{incoming.Count}개 블록을 작업 중에 복사했습니다.");
     }
 
-    static readonly Dictionary<string, string> Types = new() { ["plain"] = "일반 프롬프트", ["jailbreak"] = "탈옥 프롬프트", ["cot"] = "사고 지침", ["chatML"] = "ChatML", ["description"] = "캐릭터 설명", ["persona"] = "페르소나", ["lorebook"] = "로어북", ["authornote"] = "작가의 노트", ["memory"] = "메모리", ["chat"] = "채팅 기록", ["postEverything"] = "마지막 삽입 영역", ["cache"] = "캐시 지점" };
+    static readonly Dictionary<string, string> Types = new() { ["plain"] = "일반 프롬프트", ["jailbreak"] = "탈옥 프롬프트", ["chat"] = "채팅 기록", ["persona"] = "페르소나", ["description"] = "캐릭터 설명", ["authornote"] = "작가의 노트", ["lorebook"] = "로어북", ["memory"] = "메모리", ["postEverything"] = "마지막 삽입 영역", ["chatML"] = "ChatML", ["cache"] = "캐시 지점", ["cot"] = "사고 지침" };
     static string TypeName(Value b) => Types.GetValueOrDefault(b.Str("type"), b.Str("type"));
     static string Label(Value b) => string.IsNullOrEmpty(b.Str("name")) ? TypeName(b) : b.Str("name");
     static bool Plain(Value b) => b.Str("type") is "plain" or "jailbreak" or "cot" or "chatML";
@@ -257,16 +258,32 @@ public sealed partial class MainWindow : Window
         var details = new StackPanel { Visibility = collapsed.Contains(block) ? Visibility.Collapsed : Visibility.Visible };
         var subtitle = new TextBlock { Text = Subtitle(block), Foreground = Muted, FontSize = 11, Margin = new Thickness(0, 5, 0, 10) }; details.Children.Add(subtitle);
         if (editable) refreshHeaders[block] = () => { title.Text = $"{blocks.IndexOf(block) + 1:00}   {Label(block)}"; subtitle.Text = Subtitle(block); };
-        if (Plain(block)) details.Children.Add(Field(block, "text", editable, true));
-        else if (Inner(block)) AddField(details, "내부 형식 · 첫 {{slot}} 자리에 해당 내용을 삽입", block, "innerFormat", editable, true);
-        else details.Children.Add(new Border { Background = new SolidColorBrush(Color.FromRgb(239, 246, 246)), Padding = new Thickness(14), CornerRadius = new CornerRadius(5), Child = Text(Placeholder(block), 13, Accent) });
-        var settings = new StackPanel { Margin = new Thickness(0, 8, 0, 0) }; AddField(settings, "블록 이름", block, "name", editable);
-        if (block.Str("type") is "plain" or "jailbreak" or "cot") { AddChoice(settings, "역할", block, "role", ["system", "user", "bot"], editable); AddChoice(settings, "구분", block, "type2", ["normal", "main", "globalNote"], editable); }
-        if (Inner(block)) AddChoice(settings, "역할", block, "role2", ["system", "user", "bot"], editable);
-        if (block.Str("type") == "authornote") AddField(settings, "기본 작가의 노트", block, "defaultText", editable, true);
-        if (block.Str("type") == "chat") { AddNumber(settings, "시작 범위 · -1000은 전체 기록", block, "rangeStart", editable); AddNumber(settings, "끝 범위 · end는 마지막까지", block, "rangeEnd", editable, true); AddBool(settings, "시스템 채팅에서 원래 역할 유지", block, "chatAsOriginalOnSystem", editable); }
-        if (block.Str("type") == "cache") { AddNumber(settings, "깊이", block, "depth", editable); AddChoice(settings, "역할", block, "role", ["all", "user", "assistant", "system"], editable); }
-        var settingsExpander = new Expander { Header = "블록 설정", Content = settings, Margin = new Thickness(0, 10, 0, 0) }; details.Children.Add(settingsExpander); stack.Children.Add(details);
+        AddField(details, "이름", block, "name", editable);
+        AddTypeChoice(details, block, editable);
+        string blockType = block.Str("type");
+        if (blockType is "plain" or "jailbreak" or "cot")
+        {
+            AddMappedChoice(details, "특수 타입", block, "type2", [new("normal", "없음"), new("main", "메인 프롬프트"), new("globalNote", "글로벌 노트")], editable);
+            AddField(details, "본문", block, "text", editable, true);
+            AddMappedChoice(details, "역할", block, "role", PromptRoles(), editable);
+        }
+        else if (blockType == "chatML") AddField(details, "본문", block, "text", editable, true);
+        else if (Inner(block))
+        {
+            if (blockType == "authornote") AddField(details, "기본 작가의 노트", block, "defaultText", editable, true);
+            AddField(details, "본문 · 첫 {{slot}} 자리에 해당 내용을 삽입", block, "innerFormat", editable, true);
+            AddMappedChoice(details, "역할", block, "role2", PromptRoles(), editable);
+        }
+        else if (blockType == "chat")
+        {
+            AddNumber(details, "시작 범위 · -1000은 전체 기록", block, "rangeStart", editable); AddNumber(details, "끝 범위 · end는 마지막까지", block, "rangeEnd", editable, true); AddBool(details, "시스템 채팅에서 원래 역할 유지", block, "chatAsOriginalOnSystem", editable);
+        }
+        else if (blockType == "cache")
+        {
+            AddNumber(details, "깊이", block, "depth", editable); AddMappedChoice(details, "역할", block, "role", [new("all", "전체"), new("user", "사용자"), new("assistant", "캐릭터"), new("system", "시스템")], editable);
+        }
+        else details.Children.Add(new Border { Background = new SolidColorBrush(Color.FromRgb(239, 246, 246)), Padding = new Thickness(14), CornerRadius = new CornerRadius(5), Margin = new Thickness(0, 8, 0, 0), Child = Text(Placeholder(block), 13, Accent) });
+        var settings = new StackPanel(); var settingsExpander = new Expander { Header = "원본 추가 필드", Content = settings, Margin = new Thickness(0, 10, 0, 0), Visibility = Visibility.Collapsed }; details.Children.Add(settingsExpander); stack.Children.Add(details);
         card.Tag = new BlockView(block, details, settings, settingsExpander, collapsed);
         card.PreviewMouseLeftButtonDown += (_, e) => { if (IsInteractive(e.OriginalSource as DependencyObject, card)) return; if (collapsed.Remove(block)) details.Visibility = Visibility.Visible; else { collapsed.Add(block); details.Visibility = Visibility.Collapsed; } dirty = editable || dirty; Update(); };
         var badge = Text("", 11, Muted); badge.Margin = new Thickness(6, 0, 0, 0); top.Children.Add(badge);
@@ -287,6 +304,28 @@ public sealed partial class MainWindow : Window
         if (edit) t.TextChanged += (_, _) => { if (!captured) { Remember(); captured = true; } b.Set(key, Value.String(t.Text)); dirty = true; RefreshPromptPreview(); Update(); }; return t;
     }
     void AddField(Panel p, string label, Value b, string key, bool edit, bool multi = false) { p.Children.Add(new TextBlock { Text = label, Foreground = Muted, Margin = new Thickness(0, 7, 0, 4), FontSize = 11 }); p.Children.Add(Field(b, key, edit, multi)); }
+    static ChoiceItem[] PromptRoles() => [new("user", "사용자"), new("bot", "캐릭터"), new("system", "시스템")];
+    void AddTypeChoice(Panel p, Value b, bool edit)
+    {
+        p.Children.Add(new TextBlock { Text = "타입", Foreground = Muted, Margin = new Thickness(0, 7, 0, 4), FontSize = 11 });
+        string current = b.Str("type"); var options = Types.Select(pair => new ChoiceItem(pair.Key, pair.Value)).ToList();
+        if (!Types.ContainsKey(current)) options.Insert(0, new(current, current));
+        var c = new ComboBox { Tag = new FieldAddress(b, "type"), ItemsSource = options, DisplayMemberPath = nameof(ChoiceItem.Label), SelectedValuePath = nameof(ChoiceItem.Value), SelectedValue = current, IsEnabled = edit };
+        c.SelectionChanged += (_, _) =>
+        {
+            if (!edit || c.SelectedValue is not string value || value == b.Str("type")) return;
+            Remember(); b.Set("type", Value.String(value)); InitializeBlockType(b, value, false); dirty = true;
+            selected = blocks.IndexOf(b); RenderWork(); FocusSelected(); Update($"블록 타입을 {Types.GetValueOrDefault(value, value)}(으)로 변경했습니다.");
+        };
+        p.Children.Add(c);
+    }
+    void AddMappedChoice(Panel p, string label, Value b, string key, IEnumerable<ChoiceItem> source, bool edit)
+    {
+        p.Children.Add(new TextBlock { Text = label, Foreground = Muted, Margin = new Thickness(0, 7, 0, 4), FontSize = 11 });
+        string current = b.Str(key); var options = source.ToList(); if (!options.Any(item => item.Value == current)) options.Insert(0, new(current, current));
+        var c = new ComboBox { Tag = new FieldAddress(b, key), ItemsSource = options, DisplayMemberPath = nameof(ChoiceItem.Label), SelectedValuePath = nameof(ChoiceItem.Value), SelectedValue = current, IsEnabled = edit };
+        c.SelectionChanged += (_, _) => { if (c.SelectedValue is string value && value != b.Str(key)) { Remember(); b.Set(key, Value.String(value)); dirty = true; RefreshPromptPreview(); Update(); } }; p.Children.Add(c);
+    }
     void AddChoice(Panel p, string label, Value b, string key, string[] values, bool edit) { p.Children.Add(Text(label, 11, Muted)); string current = b.Str(key); var options = values.ToList(); if (!options.Contains(current)) options.Insert(0, current); var c = new ComboBox { Tag = new FieldAddress(b, key), ItemsSource = options, SelectedItem = current, IsEnabled = edit }; c.SelectionChanged += (_, _) => { if (c.SelectedItem is string value && value != b.Str(key)) { Remember(); b.Set(key, Value.String(value)); dirty = true; RefreshPromptPreview(); Update(); } }; p.Children.Add(c); }
     void AddNumber(Panel p, string label, Value b, string key, bool edit, bool allowEnd = false) { p.Children.Add(Text(label, 11, Muted)); var t = new TextBox { Tag = new FieldAddress(b, key), Text = Display(b.Get(key)), IsReadOnly = !edit, Margin = new Thickness(0, 3, 0, 6) }; void Commit() { if (!edit || t.Text == Display(b.Get(key))) return; if (allowEnd && t.Text == "end") { Remember(); b.Set(key, Value.String("end")); } else if (long.TryParse(t.Text, out long n) && n is >= -1000000 and <= 1000000) { Remember(); b.Set(key, Value.Int(n)); } else { t.Text = Display(b.Get(key)); return; } dirty = true; RefreshPromptPreview(); Update(); } t.LostKeyboardFocus += (_, _) => Commit(); t.KeyDown += (_, e) => { if (e.Key == Key.Enter) Commit(); }; p.Children.Add(t); }
     void AddBool(Panel p, string label, Value b, string key, bool edit) { var c = new CheckBox { Tag = new FieldAddress(b, key), Content = label, IsChecked = b.Get(key)?.Boolean() ?? false, IsEnabled = edit, Margin = new Thickness(0, 6, 0, 6) }; c.Click += (_, _) => { Remember(); b.Set(key, Value.Bool(c.IsChecked == true)); dirty = true; RefreshPromptPreview(); Update(); }; p.Children.Add(c); }
@@ -297,8 +336,25 @@ public sealed partial class MainWindow : Window
     void AddBlock()
     {
         var d = Dialog("새 블록", 400, 240, out var p); p.Children.Add(Text("추가할 블록 유형을 선택하세요.", 15)); var c = new ComboBox { ItemsSource = Types.ToList(), DisplayMemberPath = "Value", SelectedIndex = 0, Margin = new Thickness(0, 16, 0, 16) }; p.Children.Add(c); p.Children.Add(Button("추가", () => d.DialogResult = true, true)); if (d.ShowDialog() != true) return;
-        string key = ((KeyValuePair<string, string>)c.SelectedItem).Key; var b = Value.Map(); b.Set("type", Value.String(key)); if (Plain(b)) { b.Set("text", Value.String("")); if (key != "chatML") { b.Set("role", Value.String("system")); b.Set("type2", Value.String("normal")); } } if (Inner(b)) { b.Set("role2", Value.String("system")); b.Set("innerFormat", Value.String("{{slot}}")); } if (key == "authornote") b.Set("defaultText", Value.String("")); if (key == "chat") { b.Set("rangeStart", Value.Int(-1000)); b.Set("rangeEnd", Value.String("end")); } if (key == "cache") { b.Set("depth", Value.Int(1)); b.Set("role", Value.String("all")); b.Set("name", Value.String("캐시 지점")); }
+        string key = ((KeyValuePair<string, string>)c.SelectedItem).Key; var b = Value.Map(); b.Set("type", Value.String(key)); InitializeBlockType(b, key, true);
         Remember(); int at = selected >= 0 ? selected + 1 : blocks.Count; blocks.Insert(at, b); selected = at; dirty = true; RenderWork(); FocusSelected(); Update("새 블록을 추가했습니다.");
+    }
+
+    static void InitializeBlockType(Value block, string type, bool isNew)
+    {
+        if (type is "plain" or "jailbreak" or "cot")
+        {
+            block.Set("text", Value.String("")); block.Set("role", Value.String("system")); if (isNew || string.IsNullOrEmpty(block.Str("type2"))) block.Set("type2", Value.String("normal"));
+        }
+        else if (type == "chatML" && isNew) block.Set("text", Value.String(""));
+        if (type is "description" or "persona" or "authornote" or "memory")
+        {
+            if (block.Str("role2") is not ("system" or "user" or "bot" or "assistant")) block.Set("role2", Value.String("system"));
+            if (isNew) block.Set("innerFormat", Value.String("{{slot}}"));
+        }
+        if (type == "authornote" && isNew) block.Set("defaultText", Value.String(""));
+        if (type == "chat") { block.Set("rangeStart", Value.Int(-1000)); block.Set("rangeEnd", Value.String("end")); }
+        if (type == "cache") { block.Set("depth", Value.Int(1)); block.Set("role", Value.String("all")); if (isNew) block.Set("name", Value.String("캐시 지점")); }
     }
 
     void CopyCurrentToggles()
@@ -441,7 +497,7 @@ public sealed partial class MainWindow : Window
         try { var output = basis.Clone(); output.Data.Set("name", Value.String(name.Text.Trim())); output.Data.Set("promptTemplate", Value.Array(blocks.Select(v => v.Clone()))); output.Data.Set("customPromptTemplateToggle", Value.String(customToggleText)); output.Data.Set("regex", Value.Array(regexScripts.Select(v => v.Clone()))); RisupCodec.Save(output, save.FileName); Update("내보내기 완료: " + save.FileName); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "내보내기 실패", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
     Window Dialog(string title, int width, int height, out StackPanel panel) { panel = new StackPanel { Margin = new Thickness(24) }; return new Window { Title = title, Width = width, Height = height, Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, Content = panel }; }
-    void About() { var d = Dialog("Risup Editor 정보", 690, 530, out var p); p.Children.Add(Text("Risup Editor 0.6.0", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글 편집기 · AGPL-3.0", 13, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 360, Margin = new Thickness(0, 15, 0, 0) }); d.ShowDialog(); }
+    void About() { var d = Dialog("Risup Editor 정보", 690, 530, out var p); p.Children.Add(Text("Risup Editor 0.6.1", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글 편집기 · AGPL-3.0", 13, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 360, Margin = new Thickness(0, 15, 0, 0) }); d.ShowDialog(); }
 
     public async void RunSelfTest(string folder)
     {
@@ -449,7 +505,7 @@ public sealed partial class MainWindow : Window
         {
             if (tabs.Items.Count != 0) throw new Exception("empty reference tabs");
             string fixture = Path.Combine(folder, "reference.risup"); for (int i = 0; i < 10; i++) { references.Add(RisupCodec.Load(fixture)); collapsedReferences.Add(new()); collapsedReferenceSections.Add(new()); } RenderReferences(); tabs.SelectedIndex = 0; Copy(true); basis = OtherPreset(references[0]); workSections = null; RenderWork();
-            if (blocks.Count != references[0].Blocks!.Count) throw new Exception("tab copy"); string original = references[0].Blocks![0].Str("text"); var textbox = Descendants<TextBox>(workCards[blocks[0]]).First(); textbox.Text = "UI 편집 테스트";
+            if (blocks.Count != references[0].Blocks!.Count) throw new Exception("tab copy"); string original = references[0].Blocks![0].Str("text"); var textbox = LogicalDescendants<SyntaxBox>(workCards[blocks[0]]).First(t => t.Tag is FieldAddress a && a.Key == "text"); textbox.Text = "UI 편집 테스트";
             if (blocks[0].Str("text") != "UI 편집 테스트" || references[0].Blocks![0].Str("text") != original) throw new Exception("editing/reference isolation"); Undo(); Redo();
             var moved = blocks[0]; Move(moved, 1); Undo(); referenceIndex = 0; int count = blocks.Count; Copy(false); Undo(); Duplicate(blocks[0]); Delete(blocks[selected]); Undo(); Undo();
             customToggleText = "cot=COT 토글\nstyle=문체=select=간결,상세\nnote=메모=text\narea=지시=textarea"; SetToggleEditor(); RenderTogglePreview(); toggleValues["cot"] = "1"; blocks[0].Set("text", Value.String("A{{#when::toggle::cot}}ON{{:else}}OFF{{/}}B")); showingPreview = true; workScroll.Content = promptPreview; RefreshPromptPreview(); string previewText = PromptPreviewEngine.Build(blocks, basis, toggleValues).PlainText; if (!previewText.Contains("AONB") || previewText.Contains("OFF")) throw new Exception("toggle prompt preview"); blocks[0].Set("text", Value.String("UI 편집 테스트")); RefreshPromptPreview();
