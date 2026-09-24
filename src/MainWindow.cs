@@ -41,6 +41,7 @@ public sealed partial class MainWindow : Window
 
     record Snapshot(List<Value> Blocks, List<Value> Regex, Preset? Basis, string ToggleText, Dictionary<string, string> ToggleValues, HashSet<int> Collapsed, int Selected);
     record ToggleDef(string Key, string Name, string? Type, string[] Options, int Line);
+    record ToggleNode(ToggleDef Def, List<ToggleDef>? Children);
 
     static Brush Ink => new SolidColorBrush(Color.FromRgb(36, 51, 69));
     static Brush Muted => new SolidColorBrush(Color.FromRgb(105, 121, 140));
@@ -114,7 +115,7 @@ public sealed partial class MainWindow : Window
         var toggleGrid = new Grid(); toggleGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 130 }); toggleGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(10) }); toggleGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 130 }); toggles.Children.Add(toggleGrid);
         var editorPanel = new DockPanel(); Grid.SetRow(editorPanel, 0); toggleGrid.Children.Add(editorPanel);
         var editorLabel = Text("토글 정의", 12, Muted); editorLabel.Margin = new Thickness(0, 0, 0, 5); DockPanel.SetDock(editorLabel, Dock.Top); editorPanel.Children.Add(editorLabel);
-        toggleErrors.FontSize = 11; toggleErrors.Foreground = new SolidColorBrush(Color.FromRgb(190, 70, 70)); toggleErrors.TextWrapping = TextWrapping.Wrap; DockPanel.SetDock(toggleErrors, Dock.Bottom); editorPanel.Children.Add(toggleErrors);
+        toggleErrors.FontSize = 11; toggleErrors.Foreground = new SolidColorBrush(Color.FromRgb(166, 112, 20)); toggleErrors.TextWrapping = TextWrapping.Wrap; DockPanel.SetDock(toggleErrors, Dock.Bottom); editorPanel.Children.Add(toggleErrors);
         toggleEditor = new TextBox { AcceptsReturn = true, AcceptsTab = true, TextWrapping = TextWrapping.NoWrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, FontFamily = new FontFamily("Consolas, Malgun Gothic"), VerticalContentAlignment = VerticalAlignment.Top };
         toggleDelay.Tick += (_, _) => { toggleDelay.Stop(); RenderTogglePreview(); RefreshPromptPreview(); };
         toggleEditor.TextChanged += (_, _) => { if (settingToggleEditor) return; if (!toggleEditCaptured) { Remember(); toggleEditCaptured = true; } customToggleText = toggleEditor.Text; dirty = true; toggleDelay.Stop(); toggleDelay.Start(); Update(); };
@@ -305,35 +306,90 @@ public sealed partial class MainWindow : Window
         Remember(); EnsureBasis(Current); customToggleText = string.IsNullOrWhiteSpace(customToggleText) ? incoming : customToggleText.TrimEnd() + "\n" + incoming.TrimStart(); SetToggleEditor(); RenderTogglePreview(); RefreshPromptPreview(); dirty = true; Update("현재 참조의 토글을 작업 중에 추가했습니다.");
     }
     void SetToggleEditor() { toggleDelay.Stop(); settingToggleEditor = true; toggleEditor.Text = customToggleText; settingToggleEditor = false; toggleEditCaptured = false; }
-    List<ToggleDef> ParseToggles(out List<string> errors)
+    List<ToggleDef> ParseToggles(out List<string> notices)
     {
-        errors = new(); var result = new List<ToggleDef>(); string[] lines = customToggleText.Replace("\r", "").Split('\n');
+        notices = new(); var result = new List<ToggleDef>(); string[] lines = customToggleText.Replace("\r", "").Split('\n');
         for (int i = 0; i < lines.Length; i++)
         {
             if (string.IsNullOrWhiteSpace(lines[i])) continue; string[] parts = lines[i].Split('='); string key = parts.ElementAtOrDefault(0) ?? "", name = parts.ElementAtOrDefault(1) ?? "", type = parts.ElementAtOrDefault(2) ?? "", option = parts.ElementAtOrDefault(3) ?? "";
             string[] options = parts.Length > 3 ? option.Split(',') : [];
             if (type is "group" or "groupEnd" or "divider") result.Add(new(key, name, type, [], i + 1));
             else if (type == "caption" && name.Length > 0) result.Add(new(key, name, type, [], i + 1));
-            else if (key.Length > 0 && name.Length > 0 && (type.Length == 0 || type is "select" or "text" or "textarea")) result.Add(new(key, name, type.Length == 0 ? null : type, options, i + 1));
-            else errors.Add($"{i + 1}행: 토글 형식이 올바르지 않습니다.");
+            else if (key.Length > 0 && name.Length > 0) result.Add(new(key, name, type is "select" or "text" or "textarea" ? type : null, options, i + 1));
+            else notices.Add($"{i + 1}행: RisuAI에서 표시되지 않는 줄입니다.");
         }
         return result;
     }
-    void RenderTogglePreview()
+    static List<ToggleNode> GroupToggles(IEnumerable<ToggleDef> definitions)
     {
-        togglePreview.Children.Clear(); var definitions = ParseToggles(out var errors); toggleErrors.Text = string.Join("  ", errors); var panels = new Stack<Panel>(); panels.Push(togglePreview);
+        var result = new List<ToggleNode>(); ToggleNode? open = null;
         foreach (var def in definitions)
         {
-            if (def.Type == "group") { var content = new StackPanel(); panels.Peek().Children.Add(new Expander { Tag = new ToggleAddress(def.Line), Header = def.Name, Content = content, IsExpanded = true, Margin = new Thickness(0, 3, 0, 3) }); panels.Push(content); continue; }
-            if (def.Type == "groupEnd") { if (panels.Count > 1) panels.Pop(); continue; }
-            if (def.Type == "caption") { var caption = Text(def.Name, 11, Muted); caption.Tag = new ToggleAddress(def.Line); panels.Peek().Children.Add(caption); continue; }
-            if (def.Type == "divider") { var row = new StackPanel { Tag = new ToggleAddress(def.Line), Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 3) }; if (def.Name.Length > 0) row.Children.Add(Text(def.Name, 11, Muted)); row.Children.Add(new Separator { Width = 80, Margin = new Thickness(6, 0, 0, 0) }); panels.Peek().Children.Add(row); continue; }
-            var line = new StackPanel { Tag = new ToggleAddress(def.Line), Margin = new Thickness(0, 4, 4, 4) }; line.Children.Add(Text(def.Name, 12));
-            string currentValue = toggleValues.GetValueOrDefault(def.Key, "");
-            if (def.Type == "select") { var c = new ComboBox { ItemsSource = def.Options, SelectedIndex = int.TryParse(currentValue, out int n) && n >= 0 && n < def.Options.Length ? n : -1 }; c.SelectionChanged += (_, _) => { toggleValues[def.Key] = c.SelectedIndex < 0 ? "" : c.SelectedIndex.ToString(); ToggleValueChanged(); }; line.Children.Add(c); }
-            else if (def.Type is "text" or "textarea") { var t = new TextBox { Text = currentValue, AcceptsReturn = def.Type == "textarea", TextWrapping = TextWrapping.Wrap, MinHeight = def.Type == "textarea" ? 70 : 30, VerticalContentAlignment = VerticalAlignment.Top }; t.TextChanged += (_, _) => { toggleValues[def.Key] = t.Text; ToggleValueChanged(); }; line.Children.Add(t); }
-            else { var c = new CheckBox { Content = def.Name, IsChecked = currentValue == "1", Margin = new Thickness(0, 4, 0, 4) }; line.Children.Clear(); line.Children.Add(c); c.Click += (_, _) => { toggleValues[def.Key] = c.IsChecked == true ? "1" : "0"; ToggleValueChanged(); }; }
-            panels.Peek().Children.Add(line);
+            if (def.Type == "group") { open = new(def, new()); result.Add(open); }
+            else if (def.Type == "groupEnd") open = null;
+            else if (open is not null) open.Children!.Add(def);
+            else result.Add(new(def, null));
+        }
+        return result;
+    }
+    IEnumerable<ToggleDef> VisibleToggles()
+    {
+        ToggleDef? previousTop = null;
+        foreach (var node in GroupToggles(ParseToggles(out _)))
+        {
+            if (node.Def.Type == "group")
+            {
+                if (node.Children is { Count: > 0 })
+                {
+                    yield return node.Def;
+                    ToggleDef? previous = null;
+                    foreach (var child in node.Children)
+                    {
+                        if (child.Type == "divider" && previous?.Type == "divider" && previous.Name == child.Name) { previous = child; continue; }
+                        yield return child; previous = child;
+                    }
+                }
+                else yield return node.Def with { Type = null };
+                previousTop = node.Def;
+                continue;
+            }
+            if (node.Def.Type == "divider" && previousTop?.Type == "divider" && previousTop.Name == node.Def.Name) { previousTop = node.Def; continue; }
+            yield return node.Def; previousTop = node.Def;
+        }
+    }
+    void RenderTogglePreview()
+    {
+        togglePreview.Children.Clear(); var definitions = ParseToggles(out var notices); toggleErrors.Text = string.Join("  ", notices);
+        ToggleDef? RenderItems(Panel target, IReadOnlyList<ToggleDef> items, ToggleDef? previous = null)
+        {
+            foreach (var def in items)
+            {
+                if (def.Type == "divider" && previous?.Type == "divider" && previous.Name == def.Name) { previous = def; continue; }
+                if (def.Type == "caption") { var caption = Text(def.Name, 11, Muted); caption.Tag = new ToggleAddress(def.Line); target.Children.Add(caption); previous = def; continue; }
+                if (def.Type == "divider") { var row = new StackPanel { Tag = new ToggleAddress(def.Line), Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 3) }; if (def.Name.Length > 0) row.Children.Add(Text(def.Name, 11, Muted)); row.Children.Add(new Separator { Width = 80, Margin = new Thickness(6, 0, 0, 0) }); target.Children.Add(row); previous = def; continue; }
+                var line = new StackPanel { Tag = new ToggleAddress(def.Line), Margin = new Thickness(0, 4, 4, 4) }; line.Children.Add(Text(def.Name, 12));
+                string currentValue = toggleValues.GetValueOrDefault(def.Key, "");
+                if (def.Type == "select") { var c = new ComboBox { ItemsSource = def.Options, SelectedIndex = int.TryParse(currentValue, out int n) && n >= 0 && n < def.Options.Length ? n : -1 }; c.SelectionChanged += (_, _) => { toggleValues[def.Key] = c.SelectedIndex < 0 ? "" : c.SelectedIndex.ToString(); ToggleValueChanged(); }; line.Children.Add(c); }
+                else if (def.Type is "text" or "textarea") { var t = new TextBox { Text = currentValue, AcceptsReturn = def.Type == "textarea", TextWrapping = TextWrapping.Wrap, MinHeight = def.Type == "textarea" ? 70 : 30, VerticalContentAlignment = VerticalAlignment.Top }; t.TextChanged += (_, _) => { toggleValues[def.Key] = t.Text; ToggleValueChanged(); }; line.Children.Add(t); }
+                else { var c = new CheckBox { Content = def.Name, IsChecked = currentValue == "1", Margin = new Thickness(0, 4, 0, 4) }; line.Children.Clear(); line.Children.Add(c); c.Click += (_, _) => { toggleValues[def.Key] = c.IsChecked == true ? "1" : "0"; ToggleValueChanged(); }; }
+                target.Children.Add(line); previous = def;
+            }
+            return previous;
+        }
+        ToggleDef? previousTop = null;
+        foreach (var node in GroupToggles(definitions))
+        {
+            if (node.Def.Type == "group")
+            {
+                if (node.Children is { Count: > 0 })
+                {
+                    var content = new StackPanel(); RenderItems(content, node.Children);
+                    togglePreview.Children.Add(new Expander { Tag = new ToggleAddress(node.Def.Line), Header = node.Def.Name, Content = content, IsExpanded = true, Margin = new Thickness(0, 3, 0, 3) });
+                }
+                else RenderItems(togglePreview, [node.Def with { Type = null }], previousTop);
+                previousTop = node.Def;
+            }
+            else previousTop = RenderItems(togglePreview, [node.Def], previousTop);
         }
     }
     void ToggleValueChanged() { dirty = true; RefreshPromptPreview(); Update(); }
@@ -384,7 +440,7 @@ public sealed partial class MainWindow : Window
         try { var output = basis.Clone(); output.Data.Set("name", Value.String(name.Text.Trim())); output.Data.Set("promptTemplate", Value.Array(blocks.Select(v => v.Clone()))); output.Data.Set("customPromptTemplateToggle", Value.String(customToggleText)); output.Data.Set("regex", Value.Array(regexScripts.Select(v => v.Clone()))); RisupCodec.Save(output, save.FileName); Update("내보내기 완료: " + save.FileName); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "내보내기 실패", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
     Window Dialog(string title, int width, int height, out StackPanel panel) { panel = new StackPanel { Margin = new Thickness(24) }; return new Window { Title = title, Width = width, Height = height, Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, Content = panel }; }
-    void About() { var d = Dialog("Risup Editor 정보", 690, 530, out var p); p.Children.Add(Text("Risup Editor 0.5.0", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글 편집기 · AGPL-3.0", 13, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 360, Margin = new Thickness(0, 15, 0, 0) }); d.ShowDialog(); }
+    void About() { var d = Dialog("Risup Editor 정보", 690, 530, out var p); p.Children.Add(Text("Risup Editor 0.5.1", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글 편집기 · AGPL-3.0", 13, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 360, Margin = new Thickness(0, 15, 0, 0) }); d.ShowDialog(); }
 
     public async void RunSelfTest(string folder)
     {

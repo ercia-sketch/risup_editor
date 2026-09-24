@@ -130,7 +130,7 @@ public sealed partial class MainWindow
         }
         if (scope == 2)
         {
-            foreach (var def in ParseToggles(out _))
+            foreach (var def in VisibleToggles())
             {
                 int line = def.Line;
                 yield return new(def.Name, (start, length) => LocateToggle(line, null, false, start, length));
