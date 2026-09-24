@@ -8,6 +8,7 @@ public sealed class EditorProject
 {
     public List<Preset> References { get; } = new();
     public List<Value> Blocks { get; } = new();
+    public List<Value> Regex { get; } = new();
     public Preset? Basis { get; set; }
     public string ToggleText { get; set; } = "";
     public Dictionary<string, string> ToggleValues { get; } = new();
@@ -16,6 +17,7 @@ public sealed class EditorProject
     public int SelectedTab { get; set; } = -1;
     public int SelectedBlock { get; set; } = -1;
     public bool Preview { get; set; }
+    public bool PreviewWithJoin { get; set; }
     public bool AdditionalChecks { get; set; }
     public double[] Ratios { get; set; } = [4, 4, 2];
 }
@@ -30,6 +32,7 @@ public static class ProjectFile
         root.Set("version", Value.Int(1));
         root.Set("references", Value.Array(state.References.Select(PresetValue)));
         root.Set("blocks", Value.Array(state.Blocks.Select(v => v.Clone())));
+        root.Set("regex", Value.Array(state.Regex.Select(v => v.Clone())));
         if (state.Basis is not null) root.Set("basis", PresetValue(state.Basis));
         root.Set("toggleText", Value.String(state.ToggleText));
         var toggleValues = Value.Map();
@@ -40,6 +43,7 @@ public static class ProjectFile
         root.Set("selectedTab", Value.Int(state.SelectedTab));
         root.Set("selectedBlock", Value.Int(state.SelectedBlock));
         root.Set("preview", Value.Bool(state.Preview));
+        root.Set("previewWithJoin", Value.Bool(state.PreviewWithJoin));
         root.Set("additionalChecks", Value.Bool(state.AdditionalChecks));
         root.Set("ratios", Value.Array(state.Ratios.Select(r => Value.Int((long)Math.Round(r * 1000)))));
 
@@ -83,10 +87,14 @@ public static class ProjectFile
             SelectedTab = (int)(root.Get("selectedTab")?.Number() ?? -1),
             SelectedBlock = (int)(root.Get("selectedBlock")?.Number() ?? -1),
             Preview = root.Get("preview")?.Boolean() ?? false,
+            PreviewWithJoin = root.Get("previewWithJoin")?.Boolean() ?? false,
             AdditionalChecks = root.Get("additionalChecks")?.Boolean() ?? false
         };
         foreach (var item in root.Get("references")?.Items ?? []) state.References.Add(ReadPreset(item));
         foreach (var item in root.Get("blocks")?.Items ?? []) state.Blocks.Add(item.Clone());
+        if (root.Get("regex")?.Items is { } regex) foreach (var item in regex) state.Regex.Add(item.Clone());
+        else if (state.Basis?.Data.Get("regex")?.Items is { } legacyRegex) foreach (var item in legacyRegex) state.Regex.Add(item.Clone());
+        state.Basis?.Data.Remove("promptTemplate"); state.Basis?.Data.Remove("customPromptTemplateToggle"); state.Basis?.Data.Remove("regex");
         foreach (var pair in root.Get("toggleValues")?.Fields ?? []) if (pair.Key.Text() is { } key) state.ToggleValues[key] = pair.Item.Text() ?? "";
         foreach (var item in root.Get("collapsedWork")?.Items ?? []) if (item.Number() is { } i) state.CollapsedWork.Add((int)i);
         foreach (var set in root.Get("collapsedReferences")?.Items ?? []) state.CollapsedReferences.Add((set.Items ?? []).Select(v => (int)(v.Number() ?? -1)).Where(i => i >= 0).ToHashSet());

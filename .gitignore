@@ -1,5 +1,6 @@
 # Local .NET SDK, caches, and temporary files
 /tools/
+/.dotnet-home/
 
 # Build and publish outputs
 /artifacts/

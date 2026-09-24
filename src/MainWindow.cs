@@ -15,6 +15,7 @@ public sealed partial class MainWindow : Window
     readonly List<Preset> references = new();
     readonly List<HashSet<Value>> collapsedReferences = new();
     readonly List<Value> blocks = new();
+    readonly List<Value> regexScripts = new();
     readonly HashSet<Value> collapsedWork = new();
     readonly Stack<Snapshot> undo = new(), redo = new();
     readonly Dictionary<Value, Border> workCards = new();
@@ -28,14 +29,15 @@ public sealed partial class MainWindow : Window
     readonly ScrollViewer workScroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
     readonly TextBox toggleEditor;
     readonly TextBlock status = new(), workHint = new(), toggleErrors = new();
-    readonly Button copyTab, copyBlock, undoButton, redoButton, previewButton, importToggles;
+    readonly Button copyTab, copyBlock, undoButton, redoButton, previewButton, importToggles, importRegex;
+    readonly ToggleButton withJoinToggle;
     readonly ColumnDefinition leftColumn, workColumn, toggleColumn;
     Preset? basis;
     string customToggleText = "", projectPath = "";
     int referenceIndex = -1, selected = -1;
-    bool dirty, showingPreview, settingToggleEditor, toggleEditCaptured;
+    bool dirty, showingPreview, previewWithJoin, settingToggleEditor, toggleEditCaptured;
 
-    record Snapshot(List<Value> Blocks, Preset? Basis, string ToggleText, Dictionary<string, string> ToggleValues, HashSet<int> Collapsed, int Selected);
+    record Snapshot(List<Value> Blocks, List<Value> Regex, Preset? Basis, string ToggleText, Dictionary<string, string> ToggleValues, HashSet<int> Collapsed, int Selected);
     record ToggleDef(string Key, string Name, string? Type, string[] Options, int Line);
 
     static Brush Ink => new SolidColorBrush(Color.FromRgb(36, 51, 69));
@@ -45,7 +47,7 @@ public sealed partial class MainWindow : Window
     static TextBlock Text(string value, double size = 13, Brush? color = null) => new() { Text = value, FontSize = size, Foreground = color ?? Ink, TextWrapping = TextWrapping.Wrap };
     static Button Button(string text, Action action, bool accent = false, bool compact = false)
     {
-        var button = new Button { Content = text, FontSize = compact ? 11 : 13, Margin = new Thickness(1), Padding = compact ? new Thickness(4, 5, 4, 5) : new Thickness(12, 7, 12, 7) };
+        var button = new Button { Content = text, FontSize = compact ? 11 : 13, Margin = new Thickness(1), Padding = compact ? new Thickness(4, 5, 4, 5) : new Thickness(12, 7, 12, 7), MinHeight = compact ? 29 : 34 };
         if (accent) { button.Background = Accent; button.Foreground = Brushes.White; button.BorderBrush = Accent; }
         button.Click += (_, _) => action();
         return button;
@@ -56,27 +58,28 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         Title = "Risup Editor"; Background = new SolidColorBrush(Color.FromRgb(243, 245, 247)); FontFamily = new FontFamily("Segoe UI, Malgun Gothic");
-        Width = 1540; Height = 900; MinWidth = 1180; MinHeight = 650; WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        Width = 1540; Height = 900; MinWidth = 900; MinHeight = 560; WindowStartupLocation = WindowStartupLocation.CenterScreen;
         var root = new DockPanel { Background = Background }; Content = root;
         var bottom = new Border { Padding = new Thickness(24, 10, 24, 10), Background = Brushes.White, BorderBrush = Line, BorderThickness = new Thickness(0, 1, 0, 0), Child = CreateFooter() };
         DockPanel.SetDock(bottom, Dock.Bottom); root.Children.Add(bottom);
 
         var columns = new Grid { Margin = new Thickness(20, 16, 20, 16) };
-        leftColumn = new ColumnDefinition { Width = new GridLength(4, GridUnitType.Star), MinWidth = 320 };
-        workColumn = new ColumnDefinition { Width = new GridLength(4, GridUnitType.Star), MinWidth = 350 };
-        toggleColumn = new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star), MinWidth = 240 };
+        leftColumn = new ColumnDefinition { Width = new GridLength(4, GridUnitType.Star), MinWidth = 240 };
+        workColumn = new ColumnDefinition { Width = new GridLength(4, GridUnitType.Star), MinWidth = 270 };
+        toggleColumn = new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star), MinWidth = 160 };
         columns.ColumnDefinitions.Add(leftColumn); columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
         columns.ColumnDefinitions.Add(workColumn); columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) }); columns.ColumnDefinitions.Add(toggleColumn);
         root.Children.Add(columns);
 
         var left = new DockPanel(); Grid.SetColumn(left, 0); columns.Children.Add(left);
-        var leftHeader = new StackPanel { Height = 86 }; DockPanel.SetDock(leftHeader, Dock.Top); left.Children.Add(leftHeader);
+        var leftHeader = new StackPanel(); DockPanel.SetDock(leftHeader, Dock.Top); left.Children.Add(leftHeader);
         leftHeader.Children.Add(Text("참조 프리셋", 20)); leftHeader.Children.Add(Text("읽기 전용 · 여러 파일을 탭으로 열어 비교할 수 있습니다.", 12, Muted));
         var referenceTools = new WrapPanel { Margin = new Thickness(0, 9, 0, 7) };
         referenceTools.Children.Add(Button("불러오기", OpenDialog, compact: true));
         copyTab = Button("블록 전체 복사 →", () => Copy(true), compact: true); copyBlock = Button("블록 복사 →", () => Copy(false), compact: true);
         referenceTools.Children.Add(copyTab); referenceTools.Children.Add(copyBlock); leftHeader.Children.Add(referenceTools);
-        importToggles = Button("토글 덮어쓰기 →", ImportCurrentToggles, compact: true); referenceTools.Children.Add(importToggles);
+        importToggles = Button("토글 복사 →", CopyCurrentToggles, compact: true); referenceTools.Children.Add(importToggles);
+        importRegex = Button("정규식 복사 →", CopyCurrentRegex, compact: true); referenceTools.Children.Add(importRegex);
         referenceTools.Children.Add(Button("기타 정보 덮어쓰기 →", OverwriteOther, compact: true));
         tabs.SizeChanged += (_, _) => ResizeTabs();
         tabs.SelectionChanged += (_, e) => { if (e.Source == tabs) { if (tabs.SelectedItem is TabItem selectedTab && selectedTab.Tag is Action build) build(); referenceIndex = -1; ClearReferenceSelection(); Update(); } };
@@ -84,14 +87,18 @@ public sealed partial class MainWindow : Window
 
         var split1 = Splitter(); Grid.SetColumn(split1, 1); columns.Children.Add(split1);
         var middle = new DockPanel(); Grid.SetColumn(middle, 2); columns.Children.Add(middle);
-        var middleHeader = new StackPanel { Height = 135 }; DockPanel.SetDock(middleHeader, Dock.Top); middle.Children.Add(middleHeader);
+        var middleHeader = new StackPanel { MinHeight = 150 }; DockPanel.SetDock(middleHeader, Dock.Top); middle.Children.Add(middleHeader);
         middleHeader.Children.Add(Text("작업 중", 20)); workHint.Foreground = Muted; workHint.FontSize = 12; middleHeader.Children.Add(workHint);
         var row1 = new WrapPanel { Margin = new Thickness(0, 7, 0, 0) };
         row1.Children.Add(Button("+ 새 블록", AddBlock, compact: true)); undoButton = Button("↶ 실행 취소", Undo, compact: true); redoButton = Button("↷ 다시 실행", Redo, compact: true);
         row1.Children.Add(undoButton); row1.Children.Add(redoButton); middleHeader.Children.Add(row1);
         var row2 = new WrapPanel();
         row2.Children.Add(Button("현재 작업 삭제", NewWork, compact: true)); row2.Children.Add(Button("프로젝트 불러오기", LoadProjectDialog, compact: true));
-        previewButton = Button("미리보기", TogglePromptPreview, compact: true); row2.Children.Add(previewButton); row2.Children.Add(Button("저장", SaveProject, compact: true)); row2.Children.Add(Button("내보내기", Export, true, true)); middleHeader.Children.Add(row2);
+        var previewControls = new StackPanel { Orientation = Orientation.Horizontal };
+        previewButton = Button("미리보기", TogglePromptPreview, compact: true); previewButton.BorderThickness = new Thickness(2); previewButton.BorderBrush = Line; previewControls.Children.Add(previewButton);
+        withJoinToggle = new ToggleButton { Content = "With Join", FontSize = 11, Margin = new Thickness(1), Padding = new Thickness(6, 5, 6, 5), MinHeight = 29, ToolTip = "연속된 같은 역할의 메시지를 합칩니다." };
+        withJoinToggle.Click += (_, _) => { previewWithJoin = withJoinToggle.IsChecked == true; dirty = true; RefreshPromptPreview(); Update(); };
+        previewControls.Children.Add(withJoinToggle); row2.Children.Add(previewControls); row2.Children.Add(Button("저장", SaveProject, compact: true)); row2.Children.Add(Button("내보내기", Export, true, true)); middleHeader.Children.Add(row2);
         workScroll.Content = work; middle.Children.Add(workScroll);
 
         var split2 = Splitter(); Grid.SetColumn(split2, 3); columns.Children.Add(split2);
@@ -133,16 +140,17 @@ public sealed partial class MainWindow : Window
         if (!searchNavigating) SearchDataChanged();
         if (selected >= 0 && selected < blocks.Count && refreshHeaders.TryGetValue(blocks[selected], out var refresh)) refresh();
         Title = $"{(dirty ? "● " : "")}Risup Editor"; workHint.Text = $"{blocks.Count}개 블록 · {(showingPreview ? "미리보기" : dirty ? "저장하지 않은 변경 사항이 있습니다" : "변경 사항 없음")}";
-        copyTab.IsEnabled = Current?.Blocks is { Count: > 0 }; copyBlock.IsEnabled = Current?.Blocks is { } b && referenceIndex >= 0 && referenceIndex < b.Count; importToggles.IsEnabled = Current is not null;
+        copyTab.IsEnabled = Current?.Blocks is { Count: > 0 }; copyBlock.IsEnabled = Current?.Blocks is { } b && referenceIndex >= 0 && referenceIndex < b.Count; importToggles.IsEnabled = Current is not null; importRegex.IsEnabled = Current is not null;
+        previewButton.BorderBrush = showingPreview ? Accent : Line;
         undoButton.IsEnabled = undo.Count > 0; redoButton.IsEnabled = redo.Count > 0;
         if (message is not null) status.Text = message; else if (string.IsNullOrEmpty(status.Text)) status.Text = ".risup 파일을 불러와 시작하세요.  ·  Ctrl+O 불러오기  /  Ctrl+S 프로젝트 저장";
     }
 
-    Snapshot Capture() => new(blocks.Select(v => v.Clone()).ToList(), basis?.Clone(), customToggleText, new(toggleValues), collapsedWork.Select(v => blocks.IndexOf(v)).Where(i => i >= 0).ToHashSet(), selected);
+    Snapshot Capture() => new(blocks.Select(v => v.Clone()).ToList(), regexScripts.Select(v => v.Clone()).ToList(), basis?.Clone(), customToggleText, new(toggleValues), collapsedWork.Select(v => blocks.IndexOf(v)).Where(i => i >= 0).ToHashSet(), selected);
     void Remember() { undo.Push(Capture()); redo.Clear(); }
     void Restore(Snapshot state)
     {
-        blocks.Clear(); blocks.AddRange(state.Blocks.Select(v => v.Clone())); basis = state.Basis?.Clone(); selected = state.Selected;
+        blocks.Clear(); blocks.AddRange(state.Blocks.Select(v => v.Clone())); regexScripts.Clear(); regexScripts.AddRange(state.Regex.Select(v => v.Clone())); basis = state.Basis?.Clone(); selected = state.Selected;
         collapsedWork.Clear(); foreach (int i in state.Collapsed) if (i >= 0 && i < blocks.Count) collapsedWork.Add(blocks[i]);
         customToggleText = state.ToggleText; toggleValues.Clear(); foreach (var pair in state.ToggleValues) toggleValues[pair.Key] = pair.Value;
         SetToggleEditor(); RenderWork(); RenderTogglePreview(); RefreshPromptPreview(); dirty = true; Update();
@@ -154,7 +162,7 @@ public sealed partial class MainWindow : Window
     void NewWork()
     {
         if (!ConfirmDiscard()) return;
-        Remember(); blocks.Clear(); collapsedWork.Clear(); toggleValues.Clear(); customToggleText = ""; basis = null; selected = referenceIndex = -1; projectPath = ""; showingPreview = false; dirty = true; workScroll.Content = work;
+        Remember(); blocks.Clear(); regexScripts.Clear(); collapsedWork.Clear(); toggleValues.Clear(); customToggleText = ""; basis = null; selected = referenceIndex = -1; projectPath = ""; showingPreview = previewWithJoin = false; withJoinToggle.IsChecked = false; dirty = true; workScroll.Content = work;
         SetToggleEditor(); RenderReferences(); RenderWork(); RenderTogglePreview(); Update("현재 작업을 비웠습니다.");
     }
     void OpenDialog() { var d = new OpenFileDialog { Filter = "RisuAI 프리셋|*.risup;*.risupreset", Multiselect = true }; if (d.ShowDialog(this) == true) OpenPaths(d.FileNames); }
@@ -205,7 +213,7 @@ public sealed partial class MainWindow : Window
     {
         var preset = Current; if (preset?.Blocks is null) return;
         var incoming = all ? preset.Blocks : referenceIndex >= 0 && referenceIndex < preset.Blocks.Count ? [preset.Blocks[referenceIndex]] : [];
-        if (incoming.Count == 0) return; Remember(); basis ??= preset.Clone(); int at = selected >= 0 ? selected + 1 : blocks.Count; blocks.InsertRange(at, incoming.Select(v => v.Clone())); selected = at; dirty = true; RenderWork(); FocusSelected(); Update($"{incoming.Count}개 블록을 작업 중에 복사했습니다.");
+        if (incoming.Count == 0) return; Remember(); EnsureBasis(preset); int at = selected >= 0 ? selected + 1 : blocks.Count; blocks.InsertRange(at, incoming.Select(v => v.Clone())); selected = at; dirty = true; RenderWork(); FocusSelected(); Update($"{incoming.Count}개 블록을 작업 중에 복사했습니다.");
     }
 
     static readonly Dictionary<string, string> Types = new() { ["plain"] = "일반 프롬프트", ["jailbreak"] = "탈옥 프롬프트", ["cot"] = "사고 지침", ["chatML"] = "ChatML", ["description"] = "캐릭터 설명", ["persona"] = "페르소나", ["lorebook"] = "로어북", ["authornote"] = "작가의 노트", ["memory"] = "메모리", ["chat"] = "채팅 기록", ["postEverything"] = "마지막 삽입 영역", ["cache"] = "캐시 지점" };
@@ -283,9 +291,10 @@ public sealed partial class MainWindow : Window
         Remember(); int at = selected >= 0 ? selected + 1 : blocks.Count; blocks.Insert(at, b); selected = at; dirty = true; RenderWork(); FocusSelected(); Update("새 블록을 추가했습니다.");
     }
 
-    void ImportCurrentToggles()
+    void CopyCurrentToggles()
     {
-        if (Current is null) return; Remember(); customToggleText = Current.Data.Str("customPromptTemplateToggle"); toggleValues.Clear(); SetToggleEditor(); RenderTogglePreview(); RefreshPromptPreview(); dirty = true; Update("현재 참조의 커스텀 토글을 가져왔습니다.");
+        if (Current is null) return; string incoming = Current.Data.Str("customPromptTemplateToggle"); if (string.IsNullOrWhiteSpace(incoming)) { Update("현재 참조에는 복사할 토글이 없습니다."); return; }
+        Remember(); EnsureBasis(Current); customToggleText = string.IsNullOrWhiteSpace(customToggleText) ? incoming : customToggleText.TrimEnd() + "\n" + incoming.TrimStart(); SetToggleEditor(); RenderTogglePreview(); RefreshPromptPreview(); dirty = true; Update("현재 참조의 토글을 작업 중에 추가했습니다.");
     }
     void SetToggleEditor() { toggleDelay.Stop(); settingToggleEditor = true; toggleEditor.Text = customToggleText; settingToggleEditor = false; toggleEditCaptured = false; }
     List<ToggleDef> ParseToggles(out List<string> errors)
@@ -322,12 +331,12 @@ public sealed partial class MainWindow : Window
     void ToggleValueChanged() { dirty = true; RefreshPromptPreview(); Update(); }
 
     void TogglePromptPreview() { showingPreview = !showingPreview; workScroll.Content = showingPreview ? promptPreview : work; RefreshPromptPreview(); dirty = true; Update(); }
-    void RefreshPromptPreview() { if (showingPreview) RenderPromptPreview(PromptPreviewEngine.Build(blocks, basis, toggleValues)); }
+    void RefreshPromptPreview() { if (showingPreview) RenderPromptPreview(PromptPreviewEngine.Build(blocks, basis, toggleValues, previewWithJoin)); }
 
     EditorProject CaptureProject()
     {
-        var p = new EditorProject { Basis = basis?.Clone(), ToggleText = customToggleText, SelectedTab = tabs.SelectedIndex, SelectedBlock = selected, Preview = showingPreview, AdditionalChecks = SyntaxBox.AdditionalChecks, Ratios = [leftColumn.ActualWidth, workColumn.ActualWidth, toggleColumn.ActualWidth] };
-        p.References.AddRange(references.Select(v => v.Clone())); p.Blocks.AddRange(blocks.Select(v => v.Clone())); foreach (var pair in toggleValues) p.ToggleValues[pair.Key] = pair.Value; foreach (var b in collapsedWork) { int i = blocks.IndexOf(b); if (i >= 0) p.CollapsedWork.Add(i); }
+        var p = new EditorProject { Basis = basis?.Clone(), ToggleText = customToggleText, SelectedTab = tabs.SelectedIndex, SelectedBlock = selected, Preview = showingPreview, PreviewWithJoin = previewWithJoin, AdditionalChecks = SyntaxBox.AdditionalChecks, Ratios = [leftColumn.ActualWidth, workColumn.ActualWidth, toggleColumn.ActualWidth] };
+        p.References.AddRange(references.Select(v => v.Clone())); p.Blocks.AddRange(blocks.Select(v => v.Clone())); p.Regex.AddRange(regexScripts.Select(v => v.Clone())); foreach (var pair in toggleValues) p.ToggleValues[pair.Key] = pair.Value; foreach (var b in collapsedWork) { int i = blocks.IndexOf(b); if (i >= 0) p.CollapsedWork.Add(i); }
         for (int n = 0; n < references.Count; n++)
         {
             var indexes = new HashSet<int>();
@@ -349,7 +358,7 @@ public sealed partial class MainWindow : Window
             var p = ProjectFile.Load(path); references.Clear(); references.AddRange(p.References); collapsedReferences.Clear();
             for (int n = 0; n < references.Count; n++) { var set = new HashSet<Value>(); foreach (int i in p.CollapsedReferences.ElementAtOrDefault(n) ?? []) if (i >= 0 && i < (references[n].Blocks?.Count ?? 0)) set.Add(references[n].Blocks![i]); collapsedReferences.Add(set); }
             blocks.Clear(); blocks.AddRange(p.Blocks); collapsedWork.Clear(); foreach (int i in p.CollapsedWork) if (i >= 0 && i < blocks.Count) collapsedWork.Add(blocks[i]);
-            basis = p.Basis; customToggleText = p.ToggleText; toggleValues.Clear(); foreach (var pair in p.ToggleValues) toggleValues[pair.Key] = pair.Value; selected = p.SelectedBlock; showingPreview = p.Preview; projectPath = path;
+            basis = p.Basis; regexScripts.Clear(); regexScripts.AddRange(p.Regex.Select(v => v.Clone())); customToggleText = p.ToggleText; toggleValues.Clear(); foreach (var pair in p.ToggleValues) toggleValues[pair.Key] = pair.Value; selected = p.SelectedBlock; showingPreview = p.Preview; previewWithJoin = p.PreviewWithJoin; withJoinToggle.IsChecked = previewWithJoin; projectPath = path;
             SyntaxBox.AdditionalChecks = p.AdditionalChecks; additionalCheckBox.IsChecked = p.AdditionalChecks;
             double total = p.Ratios.Sum(); leftColumn.Width = new GridLength(p.Ratios[0] / total, GridUnitType.Star); workColumn.Width = new GridLength(p.Ratios[1] / total, GridUnitType.Star); toggleColumn.Width = new GridLength(p.Ratios[2] / total, GridUnitType.Star);
             SetToggleEditor(); RenderReferences(); tabs.SelectedIndex = Math.Clamp(p.SelectedTab, -1, references.Count - 1); RenderWork(); RenderTogglePreview(); workScroll.Content = showingPreview ? promptPreview : work; RefreshPromptPreview(); undo.Clear(); redo.Clear(); dirty = false; Update("프로젝트를 불러왔습니다: " + path);
@@ -359,20 +368,20 @@ public sealed partial class MainWindow : Window
 
     void Export()
     {
-        Keyboard.ClearFocus(); basis ??= Current?.Clone() ?? references.FirstOrDefault()?.Clone(); if (basis is null) { MessageBox.Show(this, "내보내기 전에 참조 프리셋을 하나 불러오세요.", "내보내기"); return; }
+        Keyboard.ClearFocus(); if (basis is null && (Current ?? references.FirstOrDefault()) is { } source) EnsureBasis(source); if (basis is null) { MessageBox.Show(this, "내보내기 전에 참조 프리셋을 하나 불러오세요.", "내보내기"); return; }
         var d = Dialog("프리셋 내보내기", 540, 290, out var p); p.Children.Add(Text("RisuAI에 표시할 프리셋 이름", 14)); var name = new TextBox { Text = basis.Name + " · 작업본", Margin = new Thickness(0, 10, 0, 14) }; p.Children.Add(name); p.Children.Add(Button("파일 이름과 위치 선택", () => { if (!string.IsNullOrWhiteSpace(name.Text)) d.DialogResult = true; }, true)); if (d.ShowDialog() != true) return;
         string safe = string.Concat(name.Text.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)); var save = new SaveFileDialog { Filter = "RisuAI 프리셋|*.risup", DefaultExt = ".risup", AddExtension = true, FileName = safe + ".risup", OverwritePrompt = true }; if (save.ShowDialog(this) != true) return;
-        try { var output = basis.Clone(); output.Data.Set("name", Value.String(name.Text.Trim())); output.Data.Set("promptTemplate", Value.Array(blocks.Select(v => v.Clone()))); output.Data.Set("customPromptTemplateToggle", Value.String(customToggleText)); RisupCodec.Save(output, save.FileName); Update("내보내기 완료: " + save.FileName); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "내보내기 실패", MessageBoxButton.OK, MessageBoxImage.Error); }
+        try { var output = basis.Clone(); output.Data.Set("name", Value.String(name.Text.Trim())); output.Data.Set("promptTemplate", Value.Array(blocks.Select(v => v.Clone()))); output.Data.Set("customPromptTemplateToggle", Value.String(customToggleText)); output.Data.Set("regex", Value.Array(regexScripts.Select(v => v.Clone()))); RisupCodec.Save(output, save.FileName); Update("내보내기 완료: " + save.FileName); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "내보내기 실패", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
     Window Dialog(string title, int width, int height, out StackPanel panel) { panel = new StackPanel { Margin = new Thickness(24) }; return new Window { Title = title, Width = width, Height = height, Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, Content = panel }; }
-    void About() { var d = Dialog("Risup Editor 정보", 690, 530, out var p); p.Children.Add(Text("Risup Editor 0.3.0", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글 편집기 · AGPL-3.0", 13, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 360, Margin = new Thickness(0, 15, 0, 0) }); d.ShowDialog(); }
+    void About() { var d = Dialog("Risup Editor 정보", 690, 530, out var p); p.Children.Add(Text("Risup Editor 0.4.0", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글 편집기 · AGPL-3.0", 13, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 360, Margin = new Thickness(0, 15, 0, 0) }); d.ShowDialog(); }
 
     public async void RunSelfTest(string folder)
     {
         try
         {
             if (tabs.Items.Count != 0) throw new Exception("empty reference tabs");
-            string fixture = Path.Combine(folder, "reference.risup"); for (int i = 0; i < 10; i++) { references.Add(RisupCodec.Load(fixture)); collapsedReferences.Add(new()); } RenderReferences(); tabs.SelectedIndex = 0; Copy(true);
+            string fixture = Path.Combine(folder, "reference.risup"); for (int i = 0; i < 10; i++) { references.Add(RisupCodec.Load(fixture)); collapsedReferences.Add(new()); } RenderReferences(); tabs.SelectedIndex = 0; Copy(true); basis = OtherPreset(references[0]); workSections = null; RenderWork();
             if (blocks.Count != references[0].Blocks!.Count) throw new Exception("tab copy"); string original = references[0].Blocks![0].Str("text"); var textbox = Descendants<TextBox>(workCards[blocks[0]]).First(); textbox.Text = "UI 편집 테스트";
             if (blocks[0].Str("text") != "UI 편집 테스트" || references[0].Blocks![0].Str("text") != original) throw new Exception("editing/reference isolation"); Undo(); Redo();
             var moved = blocks[0]; Move(moved, 1); Undo(); referenceIndex = 0; int count = blocks.Count; Copy(false); Undo(); Duplicate(blocks[0]); Delete(blocks[selected]); Undo(); Undo();

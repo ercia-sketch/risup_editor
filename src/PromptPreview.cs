@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
+using System.Windows.Input;
 using System.Windows.Media;
 
 namespace RisupEditor;
@@ -32,7 +33,7 @@ internal static class PromptPreviewEngine
     internal const char MarkerStart = '\uFFF0';
     internal const char MarkerEnd = '\uFFF1';
 
-    internal static string Marker(string label) => $"{MarkerStart}{label.Replace(MarkerEnd, ' ')}{MarkerEnd}";
+    internal static string Marker(string label, char kind = 's') => $"{MarkerStart}{kind}{label.Replace(MarkerEnd, ' ')}{MarkerEnd}";
     internal static string VisibleText(string text)
     {
         var output = new StringBuilder(text.Length);
@@ -43,13 +44,14 @@ internal static class PromptPreviewEngine
             output.Append(text.AsSpan(position, start - position));
             int end = text.IndexOf(MarkerEnd, start + 1);
             if (end < 0) { output.Append(text.AsSpan(start)); break; }
-            output.Append('[').Append(text.AsSpan(start + 1, end - start - 1)).Append(']');
+            int labelStart = start + 1; if (labelStart < end && "sucmrew".Contains(text[labelStart])) labelStart++;
+            output.Append(text.AsSpan(labelStart, end - labelStart));
             position = end + 1;
         }
         return output.ToString();
     }
 
-    public static PromptPreviewResult Build(IReadOnlyList<Value> blocks, Preset? basis, IReadOnlyDictionary<string, string> toggles)
+    public static PromptPreviewResult Build(IReadOnlyList<Value> blocks, Preset? basis, IReadOnlyDictionary<string, string> toggles, bool withJoin = false)
     {
         bool jailbreak = basis?.Data.Get("jailbreakToggle")?.Boolean() ?? false;
         bool chainOfThought = basis?.Data.Get("chainOfThought")?.Boolean() ?? false;
@@ -72,8 +74,6 @@ internal static class PromptPreviewEngine
                 case "plain":
                 case "jailbreak":
                 case "cot":
-                    if (block.Str("type2") == "globalNote") warningSet.Add("globalNote의 캐릭터별 교체와 이미지 지시는 런타임 데이터가 없어 기본 텍스트만 표시합니다.");
-                    if (block.Str("type2") == "main") warningSet.Add("main 프롬프트의 로어북 위치 삽입은 런타임 데이터가 없어 기본 텍스트만 표시합니다.");
                     AddMessage(entries, Role(block.Str("role", "system")), evaluator.Evaluate(block.Str("text")));
                     break;
                 case "chatML":
@@ -124,6 +124,7 @@ internal static class PromptPreviewEngine
             || model.StartsWith("claude", StringComparison.OrdinalIgnoreCase)
             || model is "openrouter" or "reverse_proxy";
         if (mergeSystem) entries = MergeSystemMessages(entries);
+        if (withJoin) entries = JoinConsecutiveRoles(entries);
         foreach (var entry in entries) entry.Content = entry.Content.Trim();
         return new(entries, warningSet.ToArray());
     }
@@ -197,6 +198,21 @@ internal static class PromptPreviewEngine
         }
         return result;
     }
+
+    static List<PromptPreviewEntry> JoinConsecutiveRoles(List<PromptPreviewEntry> source)
+    {
+        var result = new List<PromptPreviewEntry>();
+        foreach (var entry in source)
+        {
+            if (entry.Kind == PromptPreviewEntryKind.Message && result.LastOrDefault() is { Kind: PromptPreviewEntryKind.Message } previous && previous.Role == entry.Role)
+            {
+                previous.Content += "\n" + entry.Content; previous.CachePoint |= entry.CachePoint;
+                if (!string.IsNullOrEmpty(entry.Note)) previous.Note = string.IsNullOrEmpty(previous.Note) ? entry.Note : previous.Note + " · " + entry.Note;
+            }
+            else result.Add(entry);
+        }
+        return result;
+    }
 }
 
 internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> toggles, bool jailbreak, HashSet<string> warnings)
@@ -231,12 +247,12 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
                 if (marker is null || !marker.StartsWith('/'))
                 {
                     warnings.Add("닫히지 않은 CBS 조건 블록은 원문으로 보존했습니다.");
-                    output.Append(source.AsSpan(originalStart, position - originalStart)); continue;
+                    output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); continue;
                 }
                 if (condition is null)
                 {
                     warnings.Add($"런타임 값이 필요한 조건 '{{{{{trimmed}}}}}'은 평가하지 않고 원문으로 보존했습니다.");
-                    output.Append(source.AsSpan(originalStart, position - originalStart)); continue;
+                    output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); continue;
                 }
                 string selected = condition.Value ? truth : falsy;
                 output.Append(FormatConditional(selected, trimmed, mode));
@@ -296,9 +312,13 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
             return new("{{" + token + "}}", true);
         }
         if (normalized == "jbtoggled") return new(jailbreak ? "1" : "0", false);
+        if (token == "user") return new(PromptPreviewEngine.Marker("{{user}}", 'u'), true);
+        if (token == "char") return new(PromptPreviewEngine.Marker("{{char}}", 'c'), true);
+        if (token == "maxcontext") return new(PromptPreviewEngine.Marker("{{maxcontext}}", 'm'), true);
+        if (token.StartsWith("roll::", StringComparison.Ordinal)) return new(PromptPreviewEngine.Marker("{{" + token + "}}", 'r'), true);
         if (token == "slot" || token.StartsWith("slot::", StringComparison.Ordinal)) return new("{{" + token + "}}", false);
         warnings.Add($"CBS '{{{{{token}}}}}'은 런타임 값이나 RisuAI 전체 파서가 필요해 원문으로 보존했습니다.");
-        return new("{{" + token + "}}", true);
+        return new(PromptPreviewEngine.Marker("{{" + token + "}}", 'w'), true);
     }
 
     bool? EvaluateCondition(string token, bool unknown, out string mode)
@@ -357,16 +377,24 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
 
 public sealed partial class MainWindow
 {
+    sealed record PreviewRun(int Start, int Length, Run Run);
+    sealed class PreviewTextSurface(RichTextBox box, string text, List<PreviewRun> runs)
+    {
+        public RichTextBox Box { get; } = box;
+        public string Text { get; } = text;
+        public List<PreviewRun> Runs { get; } = runs;
+        public TextPointer? PointerAt(int offset)
+        {
+            var span = Runs.FirstOrDefault(r => offset >= r.Start && offset <= r.Start + r.Length);
+            return span?.Run.ContentStart.GetPositionAtOffset(Math.Clamp(offset - span.Start, 0, span.Length), LogicalDirection.Forward);
+        }
+    }
+    readonly List<PreviewTextSurface> previewTextSurfaces = new();
+    readonly List<(string Text, FrameworkElement Element)> previewAuxiliaryText = new();
+
     void RenderPromptPreview(PromptPreviewResult result)
     {
-        promptPreview.Children.Clear();
-        if (result.Warnings.Count > 0)
-        {
-            var visibleWarnings = result.Warnings.Take(8).Select(w => "• " + w).ToList();
-            if (result.Warnings.Count > visibleWarnings.Count) visibleWarnings.Add($"• 그 밖의 제한 {result.Warnings.Count - visibleWarnings.Count}개");
-            var warningText = Text("동적 미리보기 제한\n" + string.Join("\n", visibleWarnings), 11, new SolidColorBrush(Color.FromRgb(139, 86, 28)));
-            promptPreview.Children.Add(new Border { Background = new SolidColorBrush(Color.FromRgb(255, 247, 226)), BorderBrush = new SolidColorBrush(Color.FromRgb(235, 190, 112)), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(10), Margin = new Thickness(0, 0, 8, 10), Child = warningText });
-        }
+        promptPreview.Children.Clear(); previewTextSurfaces.Clear(); previewAuxiliaryText.Clear();
         if (result.Entries.Count == 0)
         {
             promptPreview.Children.Add(Card(Text("표시할 프롬프트 메시지가 없습니다.", 13, Muted))); return;
@@ -377,15 +405,17 @@ public sealed partial class MainWindow
             var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
             var role = Text(entry.Kind == PromptPreviewEntryKind.Runtime ? "RUNTIME · " + entry.Role : entry.Role.ToUpperInvariant(), 11,
                 entry.Kind == PromptPreviewEntryKind.Runtime ? new SolidColorBrush(Color.FromRgb(151, 91, 18)) : RoleBrush(entry.Role));
-            role.FontWeight = FontWeights.SemiBold; header.Children.Add(role);
+            role.FontWeight = FontWeights.SemiBold; header.Children.Add(role); previewAuxiliaryText.Add((role.Text, role));
             if (entry.CachePoint)
             {
-                var cache = Text("CACHE POINT", 10, Accent); DockPanel.SetDock(cache, Dock.Right); header.Children.Add(cache);
+                var cache = Text("CACHE POINT", 10, Accent); DockPanel.SetDock(cache, Dock.Right); header.Children.Add(cache); previewAuxiliaryText.Add((cache.Text, cache));
             }
             body.Children.Add(header);
-            var content = new TextBlock { TextWrapping = TextWrapping.Wrap, FontFamily = new FontFamily("Consolas, Malgun Gothic"), FontSize = 13, Foreground = Ink };
-            AddPreviewInlines(content, entry.Content); body.Children.Add(content);
-            if (!string.IsNullOrEmpty(entry.Note)) { var note = Text(entry.Note, 10, Muted); note.Margin = new Thickness(0, 7, 0, 0); body.Children.Add(note); }
+            var document = new FlowDocument { PagePadding = new Thickness(0), FontFamily = new FontFamily("Consolas, Malgun Gothic"), FontSize = 13, Foreground = Ink };
+            var paragraph = new Paragraph { Margin = new Thickness(0) }; document.Blocks.Add(paragraph);
+            var content = new RichTextBox { Document = document, IsReadOnly = true, IsDocumentEnabled = true, BorderThickness = new Thickness(0), Background = Brushes.Transparent, Padding = new Thickness(0), VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, MinHeight = 22, Cursor = Cursors.IBeam };
+            previewTextSurfaces.Add(AddPreviewInlines(content, paragraph, entry.Content)); body.Children.Add(content);
+            if (!string.IsNullOrEmpty(entry.Note)) { var note = Text(entry.Note, 10, Muted); note.Margin = new Thickness(0, 7, 0, 0); body.Children.Add(note); previewAuxiliaryText.Add((note.Text, note)); }
             promptPreview.Children.Add(new Border
             {
                 Background = entry.Kind == PromptPreviewEntryKind.Runtime ? new SolidColorBrush(Color.FromRgb(255, 250, 235)) : Brushes.White,
@@ -402,25 +432,34 @@ public sealed partial class MainWindow
         _ => new SolidColorBrush(Color.FromRgb(15, 118, 110))
     };
 
-    static void AddPreviewInlines(TextBlock target, string text)
+    static PreviewTextSurface AddPreviewInlines(RichTextBox box, Paragraph target, string text)
     {
-        int position = 0;
+        int position = 0, visiblePosition = 0; var runs = new List<PreviewRun>(); var visible = new StringBuilder();
+        void AddRun(string value, Brush? foreground = null, Brush? background = null, string? tip = null, FontStyle? style = null)
+        {
+            var run = new Run(value) { Foreground = foreground ?? Ink, Background = background ?? Brushes.Transparent };
+            if (style is { } fontStyle) run.FontStyle = fontStyle; if (tip is not null) run.ToolTip = tip;
+            target.Inlines.Add(run); runs.Add(new(visiblePosition, value.Length, run)); visible.Append(value); visiblePosition += value.Length;
+        }
         while (position < text.Length)
         {
             int start = text.IndexOf(PromptPreviewEngine.MarkerStart, position);
-            if (start < 0) { target.Inlines.Add(new Run(text[position..])); break; }
-            if (start > position) target.Inlines.Add(new Run(text[position..start]));
+            if (start < 0) { AddRun(text[position..]); break; }
+            if (start > position) AddRun(text[position..start]);
             int end = text.IndexOf(PromptPreviewEngine.MarkerEnd, start + 1);
-            if (end < 0) { target.Inlines.Add(new Run(text[start..])); break; }
-            string label = text[(start + 1)..end];
-            var badge = new Border
+            if (end < 0) { AddRun(text[start..]); break; }
+            string encoded = text[(start + 1)..end]; char kind = encoded.Length > 0 ? encoded[0] : 's'; string label = encoded.Length > 0 ? encoded[1..] : "";
+            switch (kind)
             {
-                Background = new SolidColorBrush(Color.FromRgb(230, 247, 244)), BorderBrush = new SolidColorBrush(Color.FromRgb(94, 179, 168)),
-                BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(6, 2, 6, 2), Margin = new Thickness(2, 1, 2, 1),
-                Child = new TextBlock { Text = label, Foreground = new SolidColorBrush(Color.FromRgb(13, 110, 102)), FontFamily = new FontFamily("Segoe UI, Malgun Gothic"), FontSize = 11, FontStyle = FontStyles.Italic }
-            };
-            target.Inlines.Add(new InlineUIContainer(badge) { BaselineAlignment = BaselineAlignment.Center });
+                case 'u': AddRun(label, new SolidColorBrush(Color.FromRgb(220, 38, 38))); break;
+                case 'c': AddRun(label, new SolidColorBrush(Color.FromRgb(37, 99, 235))); break;
+                case 'm': AddRun(label, new SolidColorBrush(Color.FromRgb(202, 138, 4))); break;
+                case 'r': AddRun(label, new SolidColorBrush(Color.FromRgb(22, 163, 74))); break;
+                case 'w': AddRun(label, new SolidColorBrush(Color.FromRgb(194, 65, 12)), new SolidColorBrush(Color.FromRgb(255, 247, 237)), "RisuAI 런타임 값 또는 전체 파서가 필요한 표현입니다."); break;
+                default: AddRun(label, new SolidColorBrush(Color.FromRgb(13, 110, 102)), new SolidColorBrush(Color.FromRgb(230, 247, 244)), style: FontStyles.Italic); break;
+            }
             position = end + 1;
         }
+        return new PreviewTextSurface(box, visible.ToString(), runs);
     }
 }

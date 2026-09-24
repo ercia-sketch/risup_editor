@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -12,6 +13,7 @@ public sealed partial class MainWindow
     record FieldAddress(Value Owner, string Key);
     record ValueRow(int Index);
     record OtherRoot(Value Data);
+    record RegexRoot(List<Value> Items);
     record ToggleAddress(int Line);
     record BlockView(Value Block, Panel Details, Panel Settings, Expander SettingsExpander, HashSet<Value> Collapsed);
     record SearchEntry(string Text, Action<int, int> Locate);
@@ -112,6 +114,20 @@ public sealed partial class MainWindow
     }
     IEnumerable<SearchEntry> SearchEntries(int scope)
     {
+        if (scope == 1 && showingPreview)
+        {
+            foreach (var surface in previewTextSurfaces)
+            {
+                var target = surface;
+                yield return new(target.Text, (start, length) => MarkPreviewSearch(target, start, length));
+            }
+            foreach (var item in previewAuxiliaryText)
+            {
+                var target = item;
+                yield return new(target.Text, (start, length) => MarkSearch(target.Element, start, length));
+            }
+            yield break;
+        }
         if (scope == 2)
         {
             foreach (var def in ParseToggles(out _))
@@ -132,12 +148,26 @@ public sealed partial class MainWindow
                 {
                     EnsureWorkEditor(scope);
                     var card = LogicalDescendants<Border>(SearchRoot(scope)).FirstOrDefault(b => b.Tag is BlockView view && ReferenceEquals(view.Block, block));
-                    if (card?.Tag is BlockView view) { view.Collapsed.Remove(block); view.Details.Visibility = Visibility.Visible; var title = LogicalDescendants<TextBlock>(card).FirstOrDefault(t => t.Text.EndsWith("   " + Label(block))); if (title is not null) MarkSearch(title, start, length); }
+                    if (card?.Tag is BlockView view) { view.Collapsed.Remove(block); view.Details.Visibility = Visibility.Visible; var title = LogicalDescendants<TextBlock>(card).FirstOrDefault(t => t.Text.EndsWith("   " + Label(block))); if (title is not null) MarkSearch(title, Math.Max(0, title.Text.Length - Label(block).Length) + start, length); }
                 });
             foreach (var item in ValueEntries(block))
             {
                 var path = item.Path; bool key = item.Key;
                 yield return new(item.Text, (start, length) => LocateBlock(scope, block, path, key, start, length));
+            }
+        }
+        var regex = scope == 0 ? Current?.Data.Get("regex")?.Items : regexScripts;
+        if (regex is not null)
+        {
+            var regexValue = new Value { Items = regex };
+            foreach (var item in ValueEntries(regexValue))
+            {
+                var path = item.Path; bool key = item.Key;
+                yield return new(item.Text, (start, length) =>
+                {
+                    EnsureWorkEditor(scope); var root = LogicalDescendants<Panel>(SearchRoot(scope)).FirstOrDefault(p => p.Tag is RegexRoot tag && ReferenceEquals(tag.Items, regex));
+                    if (root is not null) LocateValue(root, path, key, start, length);
+                });
             }
         }
         yield return new(scope == 0 ? Current?.Data.Str("customPromptTemplateToggle") ?? "" : customToggleText, (start, length) =>
@@ -169,8 +199,8 @@ public sealed partial class MainWindow
             else { string? text = child.Raw?[0] is 0xc2 or 0xc3 ? child.Boolean().ToString() : Scalar(child); if (text is not null) yield return (text, path, false); }
         }
     }
-    DependencyObject SearchRoot(int scope) => scope == 0 ? (tabs.SelectedItem as TabItem)?.Content as DependencyObject ?? tabs : work;
-    void EnsureWorkEditor(int scope) { if (scope == 1 && showingPreview) { showingPreview = false; workScroll.Content = work; Update(); } }
+    DependencyObject SearchRoot(int scope) => scope == 0 ? (tabs.SelectedItem as TabItem)?.Content as DependencyObject ?? tabs : scope == 1 && showingPreview ? promptPreview : work;
+    void EnsureWorkEditor(int scope) { }
     void LocateBlock(int scope, Value block, int[] path, bool key, int start, int length)
     {
         EnsureWorkEditor(scope);
@@ -223,19 +253,49 @@ public sealed partial class MainWindow
         element.UpdateLayout();
         if (element is TextBox box)
         {
-            var old = box.SelectionBrush; bool inactive = box.IsInactiveSelectionHighlightEnabled;
-            box.SelectionBrush = Brushes.Gold; box.IsInactiveSelectionHighlightEnabled = true;
+            var old = box.SelectionBrush; double oldOpacity = box.SelectionOpacity; bool inactive = box.IsInactiveSelectionHighlightEnabled; object oldInactive = box.Resources[SystemColors.InactiveSelectionHighlightBrushKey]; object oldText = box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey];
+            box.SelectionBrush = Brushes.Yellow; box.SelectionOpacity = 1; box.IsInactiveSelectionHighlightEnabled = true; box.Resources[SystemColors.InactiveSelectionHighlightBrushKey] = Brushes.Yellow; box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey] = Brushes.Black;
             box.Select(Math.Min(start, box.Text.Length), Math.Min(length, Math.Max(0, box.Text.Length - start)));
             Rect rect = box.GetRectFromCharacterIndex(Math.Min(start, box.Text.Length));
-            if (!rect.IsEmpty) box.BringIntoView(rect); else box.BringIntoView();
-            clearSearchMark = () => { box.Select(box.SelectionStart, 0); box.SelectionBrush = old; box.IsInactiveSelectionHighlightEnabled = inactive; };
+            if (!rect.IsEmpty) { box.BringIntoView(rect); CenterSearchResult(box, rect); } else box.BringIntoView();
+            clearSearchMark = () => { box.Select(box.SelectionStart, 0); box.SelectionBrush = old; box.SelectionOpacity = oldOpacity; box.IsInactiveSelectionHighlightEnabled = inactive; RestoreResource(box, SystemColors.InactiveSelectionHighlightBrushKey, oldInactive); RestoreResource(box, SystemColors.InactiveSelectionHighlightTextBrushKey, oldText); };
         }
         else
         {
             element.BringIntoView();
-            if (element is TextBlock text) { var old = text.Background; text.Background = Brushes.Gold; clearSearchMark = () => text.Background = old; }
-            else if (element is Control control) { var old = control.Background; control.Background = Brushes.Gold; clearSearchMark = () => { control.Background = old; if (control is ComboBoxItem) { var owner = ItemsControl.ItemsControlFromItemContainer(control) as ComboBox; if (owner is not null) owner.IsDropDownOpen = false; } }; }
+            if (element is TextBlock text)
+            {
+                string original = text.Text; var oldBackground = text.Background; var oldForeground = text.Foreground; int safeStart = Math.Clamp(start, 0, original.Length), safeLength = Math.Clamp(length, 0, original.Length - safeStart);
+                text.Inlines.Clear(); if (safeStart > 0) text.Inlines.Add(new Run(original[..safeStart])); text.Inlines.Add(new Run(original.Substring(safeStart, safeLength)) { Background = Brushes.Yellow, Foreground = Brushes.Black }); if (safeStart + safeLength < original.Length) text.Inlines.Add(new Run(original[(safeStart + safeLength)..]));
+                CenterSearchResult(text, new Rect(0, 0, text.ActualWidth, text.ActualHeight));
+                clearSearchMark = () => { text.Inlines.Clear(); text.Text = original; text.Background = oldBackground; text.Foreground = oldForeground; };
+            }
+            else if (element is Control control) { var old = control.Background; control.Background = Brushes.Yellow; clearSearchMark = () => { control.Background = old; if (control is ComboBoxItem) { var owner = ItemsControl.ItemsControlFromItemContainer(control) as ComboBox; if (owner is not null) owner.IsDropDownOpen = false; } }; }
         }
+    }
+    void MarkPreviewSearch(PreviewTextSurface surface, int start, int length)
+    {
+        var begin = surface.PointerAt(start); var end = surface.PointerAt(start + length); if (begin is null || end is null) return;
+        var box = surface.Box; var oldBrush = box.SelectionBrush; double oldOpacity = box.SelectionOpacity; bool oldEnabled = box.IsInactiveSelectionHighlightEnabled; object oldInactive = box.Resources[SystemColors.InactiveSelectionHighlightBrushKey]; object oldText = box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey];
+        box.SelectionBrush = Brushes.Yellow; box.SelectionOpacity = 1; box.IsInactiveSelectionHighlightEnabled = true; box.Resources[SystemColors.InactiveSelectionHighlightBrushKey] = Brushes.Yellow; box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey] = Brushes.Black; box.Selection.Select(begin, end);
+        Rect rect = begin.GetCharacterRect(LogicalDirection.Forward); if (!rect.IsEmpty) { box.BringIntoView(rect); CenterSearchResult(box, rect); } else box.BringIntoView();
+        clearSearchMark = () => { box.Selection.Select(box.Document.ContentStart, box.Document.ContentStart); box.SelectionBrush = oldBrush; box.SelectionOpacity = oldOpacity; box.IsInactiveSelectionHighlightEnabled = oldEnabled; RestoreResource(box, SystemColors.InactiveSelectionHighlightBrushKey, oldInactive); RestoreResource(box, SystemColors.InactiveSelectionHighlightTextBrushKey, oldText); };
+    }
+    static void RestoreResource(FrameworkElement element, object key, object value)
+    {
+        if (value == DependencyProperty.UnsetValue || value is null) element.Resources.Remove(key); else element.Resources[key] = value;
+    }
+    void CenterSearchResult(FrameworkElement element, Rect rect)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            element.UpdateLayout();
+            for (DependencyObject? parent = VisualTreeHelper.GetParent(element); parent is not null; parent = VisualTreeHelper.GetParent(parent))
+                if (parent is ScrollViewer scroll && scroll.ScrollableHeight > 0)
+                {
+                    Point point = element.TranslatePoint(new Point(rect.X, rect.Y), scroll); scroll.ScrollToVerticalOffset(Math.Clamp(scroll.VerticalOffset + point.Y - scroll.ViewportHeight / 2, 0, scroll.ScrollableHeight)); break;
+                }
+        }, DispatcherPriority.Loaded);
     }
     static IEnumerable<T> LogicalDescendants<T>(DependencyObject root) where T : DependencyObject
     {

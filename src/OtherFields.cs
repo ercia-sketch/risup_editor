@@ -8,11 +8,27 @@ namespace RisupEditor;
 
 public sealed partial class MainWindow
 {
-    static bool OtherKey(string? key) => key is not "promptTemplate" and not "customPromptTemplateToggle";
+    static bool OtherKey(string? key) => key is not "promptTemplate" and not "customPromptTemplateToggle" and not "regex";
+    void EnsureBasis(Preset source)
+    {
+        basis ??= new Preset { Path = source.Path, Envelope = source.Envelope.Clone(), Data = Value.Map() };
+    }
+    static Preset OtherPreset(Preset source)
+    {
+        var copy = source.Clone(); copy.Data.Remove("promptTemplate"); copy.Data.Remove("customPromptTemplateToggle"); copy.Data.Remove("regex"); return copy;
+    }
+    void CopyCurrentRegex()
+    {
+        if (Current is null) return;
+        var incoming = Current.Data.Get("regex")?.Items;
+        if (incoming is not { Count: > 0 }) { Update("현재 참조에는 복사할 정규식이 없습니다."); return; }
+        Remember(); EnsureBasis(Current); regexScripts.AddRange(incoming.Select(v => v.Clone())); workSections = null; dirty = true; RenderWork(); Update($"정규식 {incoming.Count}개를 작업 중에 추가했습니다.");
+    }
     void OverwriteOther()
     {
         if (Current is null) return;
-        Remember(); basis = Current.Clone(); dirty = true; RenderWork(); Update("기타 정보를 덮어썼습니다.");
+        if (MessageBox.Show(this, "현재 작업의 기타 정보를 선택한 참조 프리셋 값으로 덮어씁니다.\n\n프롬프트 블록, 토글, 정규식은 유지됩니다. 계속하시겠습니까?", "기타 정보 덮어쓰기", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        Remember(); basis = OtherPreset(Current); workSections = null; dirty = true; RenderWork(); Update("기타 정보를 덮어썼습니다. 블록, 토글, 정규식은 유지되었습니다.");
     }
     void AppendSections(Panel panel, Preset? preset, bool editable)
     {
@@ -22,7 +38,7 @@ public sealed partial class MainWindow
             section.Children.Add(new Separator { Background = Line, Margin = new Thickness(0, 0, 0, 10) });
             section.Children.Add(Text(name, 14)); panel.Children.Add(section); return section;
         }
-        var toggles = Section("Toggle Config");
+        var toggles = Section("토글");
         if (editable)
         {
             if (toggleEditor.Parent is Panel previous) previous.Children.Remove(toggleEditor);
@@ -31,15 +47,21 @@ public sealed partial class MainWindow
             toggles.Children.Add(toggleEditor); toggles.Children.Add(toggleErrors);
         }
         else toggles.Children.Add(new SyntaxBox { Tag = "SearchToggleConfig", Text = preset?.Data.Str("customPromptTemplateToggle") ?? "", IsReadOnly = true, TextWrapping = TextWrapping.Wrap, MinHeight = 40 });
-        var other = Section("Other Fields");
+        var sourceRegex = editable ? new Value { Items = regexScripts } : preset?.Data.Get("regex") is { IsArray: true } value ? value : new Value { Items = new() };
+        var regex = Section($"정규식 · {sourceRegex.Items?.Count ?? 0}개");
+        var regexTitle = regex.Children.OfType<TextBlock>().First();
+        var regexBody = new StackPanel { Tag = new RegexRoot(sourceRegex.Items!) }; regex.Children.Add(regexBody);
+        if (sourceRegex.Items is { Count: 0 } && !editable) regexBody.Children.Add(Text("정규식이 없습니다.", 12, Muted));
+        else BuildValues(regexBody, sourceRegex, editable, afterRebuild: () => regexTitle.Text = $"정규식 · {sourceRegex.Items?.Count ?? 0}개", regexRoot: true);
+        var other = Section("기타");
         if (preset is null) { other.Children.Add(Text("기타 정보가 없습니다.", 12, Muted)); return; }
-        other.Tag = new OtherRoot(preset.Data);
-        BuildValues(other, preset.Data, editable, true);
+        var otherBody = new StackPanel { Tag = new OtherRoot(preset.Data) }; other.Children.Add(otherBody);
+        BuildValues(otherBody, preset.Data, editable, true);
     }
     void ChangedOther() { dirty = true; RefreshPromptPreview(); Update(); }
-    void BuildValues(Panel target, Value container, bool editable, bool root = false)
+    void BuildValues(Panel target, Value container, bool editable, bool root = false, Action? afterRebuild = null, bool regexRoot = false)
     {
-        void Rebuild() { target.Children.Clear(); BuildValues(target, container, editable, root); ChangedOther(); }
+        void Rebuild() { target.Children.Clear(); BuildValues(target, container, editable, root, afterRebuild, regexRoot); afterRebuild?.Invoke(); ChangedOther(); }
         int count = container.Fields?.Count ?? container.Items?.Count ?? 0;
         for (int i = 0; i < count; i++)
         {
@@ -48,7 +70,7 @@ public sealed partial class MainWindow
             void Replace(Value next) { if (container.Fields is not null) container.Fields[index] = (container.Fields[index].Key, next); else container.Items![index] = next; }
             var row = new StackPanel { Tag = new ValueRow(i), Margin = new Thickness(0, 7, 0, 5) }; target.Children.Add(row);
             var header = new WrapPanel(); row.Children.Add(header);
-            string label = key?.Text() ?? (key is null ? $"[{i}]" : "[비문자열 키]");
+            string label = key?.Text() ?? (key is null ? value.IsMap ? value.Str("name", value.Str("comment", $"정규식 {i + 1}")) : $"[{i}]" : "[비문자열 키]");
             header.Children.Add(Text(label, 12, Muted));
             if (editable)
             {
@@ -81,7 +103,12 @@ public sealed partial class MainWindow
             };
             row.Children.Add(box);
         }
-        if (editable) target.Children.Add(Button("+ 항목", () =>
+        if (editable && regexRoot) target.Children.Add(Button("+ 정규식", () =>
+        {
+            var value = Value.Map(); value.Set("comment", Value.String("")); value.Set("in", Value.String("")); value.Set("out", Value.String("")); value.Set("type", Value.String("editinput"));
+            Remember(); container.Items!.Add(value); Rebuild();
+        }, compact: true));
+        else if (editable) target.Children.Add(Button("+ 항목", () =>
         {
             string? name = container.Fields is null ? "" : AskName(""); if (name is null || (root && !OtherKey(name)) || (container.Fields is not null && container.Get(name) is not null)) return;
             var dialog = Dialog("항목 추가", 340, 200, out var body); var types = new ComboBox { ItemsSource = new[] { "문자열", "숫자", "불리언", "객체", "배열", "null" }, SelectedIndex = 0 }; body.Children.Add(types); body.Children.Add(Button("추가", () => dialog.DialogResult = true)); if (dialog.ShowDialog() != true) return;
