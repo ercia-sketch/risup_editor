@@ -206,6 +206,7 @@ public sealed partial class MainWindow
         EnsureWorkEditor(scope);
         var card = LogicalDescendants<Border>(SearchRoot(scope)).FirstOrDefault(b => b.Tag is BlockView view && ReferenceEquals(view.Block, block));
         if (card?.Tag is not BlockView view) return;
+        EnsureSectionExpanded(card);
         view.Collapsed.Remove(block); view.Details.Visibility = Visibility.Visible;
         string? field = path.Length == 1 ? block.Fields?[path[0]].Key.Text() : null;
         var target = LogicalDescendants<FrameworkElement>(card).FirstOrDefault(e => e.Tag is FieldAddress a && ReferenceEquals(a.Owner, block) && a.Key == field);
@@ -222,6 +223,7 @@ public sealed partial class MainWindow
     }
     void LocateValue(Panel root, int[] path, bool key, int start, int length)
     {
+        EnsureSectionExpanded(root);
         Panel current = root;
         for (int depth = 0; depth < path.Length; depth++)
         {
@@ -250,6 +252,7 @@ public sealed partial class MainWindow
     }
     void MarkSearch(FrameworkElement element, int start, int length)
     {
+        EnsureSectionExpanded(element);
         element.UpdateLayout();
         if (element is TextBox box)
         {
@@ -272,6 +275,14 @@ public sealed partial class MainWindow
             }
             else if (element is Control control) { var old = control.Background; control.Background = Brushes.Yellow; clearSearchMark = () => { control.Background = old; if (control is ComboBoxItem) { var owner = ItemsControl.ItemsControlFromItemContainer(control) as ComboBox; if (owner is not null) owner.IsDropDownOpen = false; } }; }
         }
+    }
+    void EnsureSectionExpanded(DependencyObject element)
+    {
+        for (DependencyObject? current = element; current is not null; current = LogicalTreeHelper.GetParent(current))
+            if (current is FrameworkElement { Tag: SectionView section })
+            {
+                section.Collapsed.Remove(section.Key); section.Body.Visibility = Visibility.Visible; section.Toggle.Content = "접기";
+            }
     }
     void MarkPreviewSearch(PreviewTextSurface surface, int start, int length)
     {

@@ -14,6 +14,8 @@ public sealed class EditorProject
     public Dictionary<string, string> ToggleValues { get; } = new();
     public HashSet<int> CollapsedWork { get; } = new();
     public List<HashSet<int>> CollapsedReferences { get; } = new();
+    public HashSet<string> CollapsedWorkSections { get; } = new();
+    public List<HashSet<string>> CollapsedReferenceSections { get; } = new();
     public int SelectedTab { get; set; } = -1;
     public int SelectedBlock { get; set; } = -1;
     public bool Preview { get; set; }
@@ -40,6 +42,8 @@ public static class ProjectFile
         root.Set("toggleValues", toggleValues);
         root.Set("collapsedWork", Value.Array(state.CollapsedWork.Order().Select(i => Value.Int(i))));
         root.Set("collapsedReferences", Value.Array(state.CollapsedReferences.Select(set => Value.Array(set.Order().Select(i => Value.Int(i))))));
+        root.Set("collapsedWorkSections", Value.Array(state.CollapsedWorkSections.Order().Select(Value.String)));
+        root.Set("collapsedReferenceSections", Value.Array(state.CollapsedReferenceSections.Select(set => Value.Array(set.Order().Select(Value.String)))));
         root.Set("selectedTab", Value.Int(state.SelectedTab));
         root.Set("selectedBlock", Value.Int(state.SelectedBlock));
         root.Set("preview", Value.Bool(state.Preview));
@@ -98,9 +102,12 @@ public static class ProjectFile
         foreach (var pair in root.Get("toggleValues")?.Fields ?? []) if (pair.Key.Text() is { } key) state.ToggleValues[key] = pair.Item.Text() ?? "";
         foreach (var item in root.Get("collapsedWork")?.Items ?? []) if (item.Number() is { } i) state.CollapsedWork.Add((int)i);
         foreach (var set in root.Get("collapsedReferences")?.Items ?? []) state.CollapsedReferences.Add((set.Items ?? []).Select(v => (int)(v.Number() ?? -1)).Where(i => i >= 0).ToHashSet());
+        foreach (var item in root.Get("collapsedWorkSections")?.Items ?? []) if (item.Text() is { } key) state.CollapsedWorkSections.Add(key);
+        foreach (var set in root.Get("collapsedReferenceSections")?.Items ?? []) state.CollapsedReferenceSections.Add((set.Items ?? []).Select(v => v.Text()).OfType<string>().ToHashSet());
         var ratios = root.Get("ratios")?.Items?.Select(v => (v.Number() ?? 0) / 1000d).ToArray();
         if (ratios is { Length: 3 } && ratios.All(v => v > 0)) state.Ratios = ratios;
         while (state.CollapsedReferences.Count < state.References.Count) state.CollapsedReferences.Add(new());
+        while (state.CollapsedReferenceSections.Count < state.References.Count) state.CollapsedReferenceSections.Add(new());
         return state;
     }
 

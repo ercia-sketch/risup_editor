@@ -8,6 +8,26 @@ namespace RisupEditor;
 
 public sealed partial class MainWindow
 {
+    sealed record SectionView(string Key, StackPanel Body, Button Toggle, TextBlock Title, HashSet<string> Collapsed);
+
+    SectionView AddSection(Panel panel, string key, string title, HashSet<string> collapsed, bool first = false)
+    {
+        var outer = new StackPanel { Margin = new Thickness(0, first ? 0 : 14, 8, 12) };
+        if (!first) outer.Children.Add(new Separator { Background = Line, Margin = new Thickness(0, 0, 0, 10) });
+        var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8) }; outer.Children.Add(header);
+        var body = new StackPanel();
+        Button? toggle = null;
+        void Apply()
+        {
+            bool isCollapsed = collapsed.Contains(key); body.Visibility = isCollapsed ? Visibility.Collapsed : Visibility.Visible;
+            if (toggle is not null) toggle.Content = isCollapsed ? "펼치기" : "접기";
+        }
+        toggle = Button("접기", () => { if (!collapsed.Add(key)) collapsed.Remove(key); Apply(); dirty = true; Update(); }, compact: true);
+        toggle.Width = 48; toggle.MinHeight = 25; toggle.Padding = new Thickness(3, 2, 3, 2); toggle.Margin = new Thickness(0, 0, 8, 0); DockPanel.SetDock(toggle, Dock.Left); header.Children.Add(toggle);
+        var heading = Text(title, 14); heading.FontWeight = FontWeights.SemiBold; heading.VerticalAlignment = VerticalAlignment.Center; header.Children.Add(heading);
+        var view = new SectionView(key, body, toggle, heading, collapsed); outer.Tag = view; outer.Children.Add(body); panel.Children.Add(outer); Apply(); return view;
+    }
+
     static bool OtherKey(string? key) => key is not "promptTemplate" and not "customPromptTemplateToggle" and not "regex";
     void EnsureBasis(Preset source)
     {
@@ -30,15 +50,9 @@ public sealed partial class MainWindow
         if (MessageBox.Show(this, "현재 작업의 기타 정보를 선택한 참조 프리셋 값으로 덮어씁니다.\n\n프롬프트 블록, 토글, 정규식은 유지됩니다. 계속하시겠습니까?", "기타 정보 덮어쓰기", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         Remember(); basis = OtherPreset(Current); workSections = null; dirty = true; RenderWork(); Update("기타 정보를 덮어썼습니다. 블록, 토글, 정규식은 유지되었습니다.");
     }
-    void AppendSections(Panel panel, Preset? preset, bool editable)
+    void AppendSections(Panel panel, Preset? preset, bool editable, HashSet<string> collapsed)
     {
-        StackPanel Section(string name)
-        {
-            var section = new StackPanel { Margin = new Thickness(0, 14, 8, 12) };
-            section.Children.Add(new Separator { Background = Line, Margin = new Thickness(0, 0, 0, 10) });
-            section.Children.Add(Text(name, 14)); panel.Children.Add(section); return section;
-        }
-        var toggles = Section("토글");
+        var toggleSection = AddSection(panel, "toggles", "토글", collapsed); var toggles = toggleSection.Body;
         if (editable)
         {
             if (toggleEditor.Parent is Panel previous) previous.Children.Remove(toggleEditor);
@@ -48,12 +62,12 @@ public sealed partial class MainWindow
         }
         else toggles.Children.Add(new SyntaxBox { Tag = "SearchToggleConfig", Text = preset?.Data.Str("customPromptTemplateToggle") ?? "", IsReadOnly = true, TextWrapping = TextWrapping.Wrap, MinHeight = 40 });
         var sourceRegex = editable ? new Value { Items = regexScripts } : preset?.Data.Get("regex") is { IsArray: true } value ? value : new Value { Items = new() };
-        var regex = Section($"정규식 · {sourceRegex.Items?.Count ?? 0}개");
-        var regexTitle = regex.Children.OfType<TextBlock>().First();
+        var regexSection = AddSection(panel, "regex", $"정규식 · {sourceRegex.Items?.Count ?? 0}개", collapsed); var regex = regexSection.Body;
+        var regexTitle = regexSection.Title;
         var regexBody = new StackPanel { Tag = new RegexRoot(sourceRegex.Items!) }; regex.Children.Add(regexBody);
         if (sourceRegex.Items is { Count: 0 } && !editable) regexBody.Children.Add(Text("정규식이 없습니다.", 12, Muted));
         else BuildValues(regexBody, sourceRegex, editable, afterRebuild: () => regexTitle.Text = $"정규식 · {sourceRegex.Items?.Count ?? 0}개", regexRoot: true);
-        var other = Section("기타");
+        var otherSection = AddSection(panel, "other", "기타", collapsed); var other = otherSection.Body;
         if (preset is null) { other.Children.Add(Text("기타 정보가 없습니다.", 12, Muted)); return; }
         var otherBody = new StackPanel { Tag = new OtherRoot(preset.Data) }; other.Children.Add(otherBody);
         BuildValues(otherBody, preset.Data, editable, true);
