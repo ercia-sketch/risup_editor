@@ -12,6 +12,7 @@ public sealed class EditorProject
     public Preset? Basis { get; set; }
     public string ToggleText { get; set; } = "";
     public Dictionary<string, string> ToggleValues { get; } = new();
+    public HashSet<string> CustomOtherFields { get; } = new(StringComparer.Ordinal);
     public HashSet<int> CollapsedWork { get; } = new();
     public List<HashSet<int>> CollapsedReferences { get; } = new();
     public HashSet<string> CollapsedWorkSections { get; } = new();
@@ -40,6 +41,7 @@ public static class ProjectFile
         var toggleValues = Value.Map();
         foreach (var pair in state.ToggleValues) toggleValues.Set(pair.Key, Value.String(pair.Value));
         root.Set("toggleValues", toggleValues);
+        root.Set("customOtherFields", Value.Array(state.CustomOtherFields.Order(StringComparer.Ordinal).Select(Value.String)));
         root.Set("collapsedWork", Value.Array(state.CollapsedWork.Order().Select(i => Value.Int(i))));
         root.Set("collapsedReferences", Value.Array(state.CollapsedReferences.Select(set => Value.Array(set.Order().Select(i => Value.Int(i))))));
         root.Set("collapsedWorkSections", Value.Array(state.CollapsedWorkSections.Order().Select(Value.String)));
@@ -100,6 +102,7 @@ public static class ProjectFile
         else if (state.Basis?.Data.Get("regex")?.Items is { } legacyRegex) foreach (var item in legacyRegex) state.Regex.Add(item.Clone());
         state.Basis?.Data.Remove("promptTemplate"); state.Basis?.Data.Remove("customPromptTemplateToggle"); state.Basis?.Data.Remove("regex");
         foreach (var pair in root.Get("toggleValues")?.Fields ?? []) if (pair.Key.Text() is { } key) state.ToggleValues[key] = pair.Item.Text() ?? "";
+        foreach (var item in root.Get("customOtherFields")?.Items ?? []) if (item.Text() is { } key) state.CustomOtherFields.Add(key);
         foreach (var item in root.Get("collapsedWork")?.Items ?? []) if (item.Number() is { } i) state.CollapsedWork.Add((int)i);
         foreach (var set in root.Get("collapsedReferences")?.Items ?? []) state.CollapsedReferences.Add((set.Items ?? []).Select(v => (int)(v.Number() ?? -1)).Where(i => i >= 0).ToHashSet());
         foreach (var item in root.Get("collapsedWorkSections")?.Items ?? []) if (item.Text() is { } key) state.CollapsedWorkSections.Add(key);

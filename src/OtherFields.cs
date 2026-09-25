@@ -55,7 +55,7 @@ public sealed partial class MainWindow
     {
         if (Current is null) return;
         if (MessageBox.Show(this, "현재 작업의 기타 정보를 선택한 참조 프리셋 값으로 덮어씁니다.\n\n프롬프트 블록, 토글, 정규식은 유지됩니다. 계속하시겠습니까?", "기타 정보 덮어쓰기", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        Remember(); basis = OtherPreset(Current); workSections = null; dirty = true; RenderWork(); Update("기타 정보를 덮어썼습니다. 블록, 토글, 정규식은 유지되었습니다.");
+        Remember(); basis = OtherPreset(Current); customOtherFields.Clear(); workSections = null; dirty = true; RenderWork(); Update("기타 정보를 덮어썼습니다. 블록, 토글, 정규식은 유지되었습니다.");
     }
     void AppendSections(Panel panel, Preset? preset, bool editable, HashSet<string> collapsed)
     {
@@ -199,15 +199,16 @@ public sealed partial class MainWindow
         var label = Text($"{field.Label} ({field.Key}) · {FieldTypeLabel(field)}", 12); label.FontWeight = FontWeights.SemiBold; header.Children.Add(label);
         if (field.Help is not null) { var help = Button("설명", () => MessageBox.Show(this, field.Help, $"{field.Label} ({field.Key})", MessageBoxButton.OK, MessageBoxImage.Information), compact: true); help.Margin = new Thickness(7, 0, 0, 0); help.Padding = new Thickness(4, 1, 4, 1); help.MinHeight = 22; header.Children.Add(help); }
 
-        string mode = FieldMode(data.Get(field.Key), field);
+        string mode = FieldMode(data.Get(field.Key), field, editable && customOtherFields.Contains(field.Key));
         var modes = FieldModes(field);
         var modeBox = new ComboBox { ItemsSource = modes, DisplayMemberPath = "Label", SelectedValuePath = "Value", SelectedValue = mode, IsEnabled = editable, Margin = new Thickness(0, 4, 0, 4), Tag = new OtherFieldAddress(data, field.Key, panel) };
         panel.Children.Add(modeBox);
         bool changing = false;
         modeBox.SelectionChanged += (_, _) =>
         {
-            if (!editable || changing || modeBox.SelectedValue is not string selected || selected == FieldMode(data.Get(field.Key), field)) return;
+            if (!editable || changing || modeBox.SelectedValue is not string selected || selected == FieldMode(data.Get(field.Key), field, customOtherFields.Contains(field.Key))) return;
             Remember();
+            if (selected == "custom") customOtherFields.Add(field.Key); else customOtherFields.Remove(field.Key);
             if (selected is "keep" or "remove") data.Remove(field.Key);
             else if (selected == "disabled") data.Set(field.Key, Value.Int(-1000));
             else if (selected == "default" && field.Default is not null) data.Set(field.Key, field.Default.Clone());
@@ -230,7 +231,7 @@ public sealed partial class MainWindow
     {
         var warning = Text("", 11, Brushes.IndianRed); warning.Margin = new Thickness(0, 3, 0, 0);
         Value current = data.Get(field.Key) ?? InitialValue(field);
-        void Set(Value value) { data.Set(field.Key, value); warning.Text = Validate(value, field); ChangedOther(); }
+        void Set(Value value) { customOtherFields.Add(field.Key); data.Set(field.Key, value); warning.Text = Validate(value, field); ChangedOther(); }
         if (field.Kind == PresetFieldKind.Boolean)
         {
             var check = new CheckBox { IsChecked = current.Raw?[0] is 0xc2 or 0xc3 ? current.Boolean() : null, IsThreeState = current.Raw?[0] is not (0xc2 or 0xc3), IsEnabled = editable, Tag = new FieldAddress(data, field.Key), Margin = new Thickness(0, 4, 0, 2) };
@@ -291,8 +292,9 @@ public sealed partial class MainWindow
         PresetFieldKind.Json => "객체/배열(JSON)",
         _ => "문자열"
     };
-    static string FieldMode(Value? value, PresetField field)
+    static string FieldMode(Value? value, PresetField field, bool forceCustom = false)
     {
+        if (forceCustom) return "custom";
         if (value is null) return field.Default is not null ? "default" : field.MissingMode == MissingFieldMode.KeepUserSetting ? "keep" : "remove";
         if (field.Disableable && value.Number() == -1000) return "disabled";
         if (field.Default is not null && value.Encode().SequenceEqual(field.Default.Encode())) return "default";
