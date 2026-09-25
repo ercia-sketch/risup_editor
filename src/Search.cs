@@ -244,7 +244,12 @@ public sealed partial class MainWindow
         }
         target ??= LogicalDescendants<FrameworkElement>(root).FirstOrDefault(e => e.Tag is FieldAddress address && ReferenceEquals(address.Owner, data) && address.Key == key);
         target ??= mode;
-        if (target is not null) { EnsureSectionExpanded(target); for (DependencyObject? parent = target; parent is not null; parent = LogicalTreeHelper.GetParent(parent)) if (parent is Expander expander) expander.IsExpanded = true; MarkSearch(target, start, length); }
+        if (target is not null)
+        {
+            EnsureSectionExpanded(target);
+            for (DependencyObject? parent = target; parent is not null; parent = LogicalTreeHelper.GetParent(parent)) if (parent is Expander expander) expander.IsExpanded = true;
+            if (root is UIElement rootElement) rootElement.UpdateLayout(); target.UpdateLayout(); MarkSearch(target, start, length);
+        }
     }
     void LocateValue(Panel root, int[] path, bool key, int start, int length)
     {
@@ -312,9 +317,12 @@ public sealed partial class MainWindow
     void MarkPreviewSearch(PreviewTextSurface surface, int start, int length)
     {
         var begin = surface.PointerAt(start); var end = surface.PointerAt(start + length); if (begin is null || end is null) return;
+        IInputElement? previousFocus = Keyboard.FocusedElement;
         var box = surface.Box; var oldBrush = box.SelectionBrush; double oldOpacity = box.SelectionOpacity; bool oldEnabled = box.IsInactiveSelectionHighlightEnabled; object oldInactive = box.Resources[SystemColors.InactiveSelectionHighlightBrushKey]; object oldText = box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey];
-        box.SelectionBrush = Brushes.Yellow; box.SelectionOpacity = 1; box.IsInactiveSelectionHighlightEnabled = true; box.Resources[SystemColors.InactiveSelectionHighlightBrushKey] = Brushes.Yellow; box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey] = Brushes.Black; box.Selection.Select(begin, end);
+        box.SelectionBrush = Brushes.Yellow; box.SelectionOpacity = 1; box.IsInactiveSelectionHighlightEnabled = true; box.Resources[SystemColors.InactiveSelectionHighlightBrushKey] = Brushes.Yellow; box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey] = Brushes.Black;
+        box.Focus(); box.Selection.Select(begin, end); box.UpdateLayout();
         Rect rect = begin.GetCharacterRect(LogicalDirection.Forward); if (!rect.IsEmpty) { box.BringIntoView(rect); CenterSearchResult(box, rect); } else box.BringIntoView();
+        if (previousFocus is not null) Keyboard.Focus(previousFocus);
         clearSearchMark = () => { box.Selection.Select(box.Document.ContentStart, box.Document.ContentStart); box.SelectionBrush = oldBrush; box.SelectionOpacity = oldOpacity; box.IsInactiveSelectionHighlightEnabled = oldEnabled; RestoreResource(box, SystemColors.InactiveSelectionHighlightBrushKey, oldInactive); RestoreResource(box, SystemColors.InactiveSelectionHighlightTextBrushKey, oldText); };
     }
     static void RestoreResource(FrameworkElement element, object key, object value)
@@ -326,11 +334,16 @@ public sealed partial class MainWindow
         Dispatcher.BeginInvoke(() =>
         {
             element.UpdateLayout();
+            var scrolls = new List<ScrollViewer>();
             for (DependencyObject? parent = VisualTreeHelper.GetParent(element); parent is not null; parent = VisualTreeHelper.GetParent(parent))
                 if (parent is ScrollViewer scroll && scroll.ScrollableHeight > 0)
-                {
-                    Point point = element.TranslatePoint(new Point(rect.X, rect.Y), scroll); scroll.ScrollToVerticalOffset(Math.Clamp(scroll.VerticalOffset + point.Y - scroll.ViewportHeight / 2, 0, scroll.ScrollableHeight)); break;
-                }
+                    scrolls.Add(scroll);
+            foreach (var scroll in scrolls)
+            {
+                Point point = element.TranslatePoint(new Point(rect.X, rect.Y), scroll);
+                scroll.ScrollToVerticalOffset(Math.Clamp(scroll.VerticalOffset + point.Y - scroll.ViewportHeight / 2, 0, scroll.ScrollableHeight));
+                scroll.UpdateLayout();
+            }
         }, DispatcherPriority.Loaded);
     }
     static IEnumerable<T> LogicalDescendants<T>(DependencyObject root) where T : DependencyObject

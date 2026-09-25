@@ -13,7 +13,7 @@ public sealed partial class MainWindow
     sealed record SectionView(string Key, StackPanel Body, Button Toggle, TextBlock Title, HashSet<string> Collapsed);
     sealed record RegexCard(Value Script, Expander Expander);
     sealed record OtherFieldAddress(Value Data, string Key, FrameworkElement Editor);
-    sealed record ModeChoice(string Value, string Label);
+    sealed record FieldValidation(string Error, string Notice);
 
     SectionView AddSection(Panel panel, string key, string title, HashSet<string> collapsed, bool first = false)
     {
@@ -200,40 +200,63 @@ public sealed partial class MainWindow
         var header = new WrapPanel(); panel.Children.Add(header);
         var label = Text($"{field.Label} ({field.Key}) · {FieldTypeLabel(field)}", 12); label.FontWeight = FontWeights.SemiBold; header.Children.Add(label);
         if (field.Help is not null) { var help = Button("설명", () => MessageBox.Show(this, field.Help, $"{field.Label} ({field.Key})", MessageBoxButton.OK, MessageBoxImage.Information), compact: true); help.Margin = new Thickness(7, 0, 0, 0); help.Padding = new Thickness(4, 1, 4, 1); help.MinHeight = 22; header.Children.Add(help); }
+        if (field.ApplyCaveat is not null) { var caveat = Text(field.ApplyCaveat, 10, Brushes.DarkGoldenrod); caveat.Margin = new Thickness(0, 3, 0, 2); caveat.TextWrapping = TextWrapping.Wrap; panel.Children.Add(caveat); }
 
         string mode = FieldMode(data.Get(field.Key), field, editable && customOtherFields.Contains(field.Key));
-        var modes = FieldModes(field);
-        var modeBox = new ComboBox { ItemsSource = modes, DisplayMemberPath = "Label", SelectedValuePath = "Value", SelectedValue = mode, IsEnabled = editable, Margin = new Thickness(0, 4, 0, 4), Tag = new OtherFieldAddress(data, field.Key, panel) };
-        panel.Children.Add(modeBox);
-        bool changing = false;
-        modeBox.SelectionChanged += (_, _) =>
+        var modes = new StackPanel { Margin = new Thickness(0, 4, 0, 0) }; panel.Children.Add(modes);
+        string groupName = $"other_{field.Key}_{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(data)}";
+
+        void SelectMode(string selected)
         {
-            if (!editable || changing || modeBox.SelectedValue is not string selected || selected == FieldMode(data.Get(field.Key), field, customOtherFields.Contains(field.Key))) return;
+            if (!editable || selected == FieldMode(data.Get(field.Key), field, customOtherFields.Contains(field.Key))) return;
             Remember();
             if (selected == "custom") customOtherFields.Add(field.Key); else customOtherFields.Remove(field.Key);
-            if (selected is "keep" or "remove") data.Remove(field.Key);
+            if (selected == "missing") data.Remove(field.Key);
             else if (selected == "disabled") data.Set(field.Key, Value.Int(-1000));
             else if (selected == "default" && field.Default is not null) data.Set(field.Key, field.Default.Clone());
-            else if (selected == "custom" && data.Get(field.Key) is null) data.Set(field.Key, field.Default?.Clone() ?? InitialValue(field));
+            else if (selected == "custom" && data.Get(field.Key) is null) data.Set(field.Key, InitialValue(field));
             int position = target.Children.IndexOf(panel);
             target.Children.Remove(panel); BuildOtherField(target, data, field, editable);
             UIElement replacement = target.Children[^1]; target.Children.RemoveAt(target.Children.Count - 1); target.Children.Insert(Math.Max(0, position), replacement);
             ChangedOther();
-        };
-
-        if (mode == "custom") BuildCustomField(panel, data, field, editable);
-        else
-        {
-            string summary = mode switch { "default" => "RisuAI 프리셋 기본값: " + DisplayValue(field.Default), "disabled" => "비활성화 값: -1000", "keep" => "프리셋에 이 필드를 기록하지 않습니다.", _ => "프리셋에 이 필드를 기록하지 않습니다." };
-            panel.Children.Add(Text(summary, 11, Muted));
         }
+
+        void AddMode(string value, string title, string detail, bool available)
+        {
+            bool selected = mode == value;
+            var content = new StackPanel();
+            var titleText = Text(title, 11, selected ? Accent : Brushes.Black); titleText.FontWeight = selected ? FontWeights.SemiBold : FontWeights.Normal; content.Children.Add(titleText);
+            var detailText = Text(detail, 10, Muted); detailText.Margin = new Thickness(0, 2, 0, 0); detailText.TextWrapping = TextWrapping.Wrap; content.Children.Add(detailText);
+            if (value == "custom" && selected) BuildCustomField(content, data, field, editable);
+            var radio = new RadioButton
+            {
+                GroupName = groupName, Content = content, IsChecked = selected, IsEnabled = editable && available,
+                Tag = new OtherFieldAddress(data, field.Key, panel), HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                VerticalContentAlignment = VerticalAlignment.Top, Padding = new Thickness(8, 6, 8, 6)
+            };
+            radio.Checked += (_, _) => SelectMode(value);
+            var card = new Border
+            {
+                Child = radio, BorderBrush = selected ? Accent : Line, BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4), Background = selected ? new SolidColorBrush(Color.FromRgb(241, 248, 247)) : Brushes.White,
+                Margin = new Thickness(0, 2, 0, 2)
+            };
+            modes.Children.Add(card);
+        }
+
+        AddMode("missing", "미지정", MissingDescription(field), true);
+        AddMode("default", "RisuAI 프리셋 기본값", field.Default is null ? "공식 프리셋 기본값 없음" : DisplayValue(field.Default), field.Default is not null);
+        AddMode("disabled", field.Disableable ? "비활성화" : "비활성화 불가능", field.Disableable ? "RisuAI 비활성화 값 -1000을 저장합니다." : "이 항목은 비활성화 값을 지원하지 않습니다.", field.Disableable);
+        AddMode("custom", "사용자 지정", "사용자가 입력한 값을 수정하지 않고 그대로 저장합니다.", true);
     }
 
     void BuildCustomField(Panel panel, Value data, PresetField field, bool editable)
     {
-        var warning = Text("", 11, Brushes.IndianRed); warning.Margin = new Thickness(0, 3, 0, 0);
+        var error = Text("", 10, Brushes.IndianRed); error.Margin = new Thickness(0, 3, 0, 0); error.TextWrapping = TextWrapping.Wrap;
+        var notice = Text("", 10, Brushes.DarkGoldenrod); notice.Margin = new Thickness(0, 3, 0, 0); notice.TextWrapping = TextWrapping.Wrap;
         Value current = data.Get(field.Key) ?? InitialValue(field);
-        void Set(Value value) { customOtherFields.Add(field.Key); data.Set(field.Key, value); warning.Text = Validate(value, field); ChangedOther(); }
+        void ShowValidation(Value value) { var result = Validate(value, field); error.Text = result.Error; notice.Text = result.Notice; }
+        void Set(Value value) { customOtherFields.Add(field.Key); data.Set(field.Key, value); ShowValidation(value); ChangedOther(); }
         if (field.Kind == PresetFieldKind.Boolean)
         {
             var check = new CheckBox { IsChecked = current.Raw?[0] is 0xc2 or 0xc3 ? current.Boolean() : null, IsThreeState = current.Raw?[0] is not (0xc2 or 0xc3), IsEnabled = editable, Tag = new FieldAddress(data, field.Key), Margin = new Thickness(0, 4, 0, 2) };
@@ -243,7 +266,7 @@ public sealed partial class MainWindow
         {
             string raw = Scalar(current) ?? ""; var choices = field.Choices.ToList(); if (!choices.Any(v => v.Value == raw)) choices.Insert(0, new(raw, $"알 수 없는 값: {raw}"));
             var combo = new ComboBox { ItemsSource = choices, DisplayMemberPath = "Label", SelectedValuePath = "Value", SelectedValue = raw, IsEnabled = editable, Tag = new FieldAddress(data, field.Key), Margin = new Thickness(0, 4, 0, 2) };
-            combo.SelectionChanged += (_, _) => { if (!editable || combo.SelectedValue is not string value || value == (Scalar(data.Get(field.Key)!) ?? "")) return; Remember(); Set(field.Choices.Any(v => v.Value == value) && field.Choices.First(v => v.Value == value).Value.All(c => char.IsDigit(c) || c == '-') && long.TryParse(value, out long number) ? Value.Int(number) : Value.String(value)); }; panel.Children.Add(combo);
+            combo.SelectionChanged += (_, _) => { if (!editable || combo.SelectedValue is not string value || value == (Scalar(data.Get(field.Key)!) ?? "")) return; Remember(); Set(ChoiceValue(field, value)); }; panel.Children.Add(combo);
         }
         else
         {
@@ -264,7 +287,7 @@ public sealed partial class MainWindow
             };
             box.LostKeyboardFocus += (_, _) => captured = false; panel.Children.Add(box);
         }
-        warning.Text = Validate(current, field); panel.Children.Add(warning);
+        ShowValidation(current); panel.Children.Add(error); panel.Children.Add(notice);
     }
 
     void BuildUnknownField(Panel panel, Value data, string key, Value value, bool editable)
@@ -277,19 +300,11 @@ public sealed partial class MainWindow
         box.TextChanged += (_, _) => { if (!editable) return; var parsed = ValueJson.Parse(box.Text); box.BorderBrush = parsed is null ? Brushes.IndianRed : Line; if (parsed is null) return; if (!captured) { Remember(); captured = true; } data.Set(key, parsed); ChangedOther(); }; box.LostKeyboardFocus += (_, _) => captured = false; row.Children.Add(box);
     }
 
-    static List<ModeChoice> FieldModes(PresetField field)
-    {
-        var result = new List<ModeChoice>();
-        if (field.Default is not null) result.Add(new("default", "RisuAI 프리셋 기본값"));
-        else result.Add(field.MissingMode == MissingFieldMode.KeepUserSetting ? new("keep", "사용자 RisuAI 설정 유지 (공식 고정값 없음)") : new("remove", "미지정 시 값 제거"));
-        if (field.Disableable) result.Add(new("disabled", "비활성화"));
-        result.Add(new("custom", "사용자 지정")); return result;
-    }
     static string FieldTypeLabel(PresetField field) => field.Kind switch
     {
         PresetFieldKind.Number => "숫자",
         PresetFieldKind.Boolean => "불리언",
-        PresetFieldKind.Select => field.Default?.Text() is not null ? "문자열 선택" : "숫자 선택",
+        PresetFieldKind.Select => field.Choices.Length > 0 && field.Choices.All(v => long.TryParse(v.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _)) ? "숫자 선택" : "문자열 선택",
         PresetFieldKind.StringArray => "문자열 배열",
         PresetFieldKind.Json => "객체/배열(JSON)",
         _ => "문자열"
@@ -297,33 +312,54 @@ public sealed partial class MainWindow
     static string FieldMode(Value? value, PresetField field, bool forceCustom = false)
     {
         if (forceCustom) return "custom";
-        if (value is null) return field.Default is not null ? "default" : field.MissingMode == MissingFieldMode.KeepUserSetting ? "keep" : "remove";
+        if (value is null) return "missing";
         if (field.Disableable && value.Number() == -1000) return "disabled";
         if (field.Default is not null && value.Encode().SequenceEqual(field.Default.Encode())) return "default";
         return "custom";
     }
-    static Value InitialValue(PresetField field) => field.Kind switch { PresetFieldKind.Boolean => Value.Bool(false), PresetFieldKind.Number => Value.Int(0), PresetFieldKind.StringArray => Value.Array([]), PresetFieldKind.Json => Value.Map(), _ => Value.String("") };
+    static Value InitialValue(PresetField field)
+    {
+        if (field.Default is not null) return field.Default.Clone();
+        if (field.MissingFallback is not null && field.MissingFallback.Raw?[0] != 0xc0) return field.MissingFallback.Clone();
+        if (field.Kind == PresetFieldKind.Select && field.Choices.FirstOrDefault() is { } choice) return ChoiceValue(field, choice.Value);
+        return field.Kind switch { PresetFieldKind.Boolean => Value.Bool(false), PresetFieldKind.Number => Value.Int(0), PresetFieldKind.StringArray => Value.Array([]), PresetFieldKind.Json => Value.Map(), _ => Value.String("") };
+    }
+    static Value ChoiceValue(PresetField field, string value) => field.Choices.All(v => long.TryParse(v.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _)) && long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long number) ? Value.Int(number) : Value.String(value);
+    static string MissingDescription(PresetField field)
+    {
+        string result = field.MissingMode switch
+        {
+            MissingFieldMode.KeepUserSetting => "프리셋에 이 필드를 기록하지 않습니다. 현재 사용자 RisuAI 설정을 유지합니다.",
+            MissingFieldMode.FixedFallback => $"프리셋에 이 필드를 기록하지 않습니다. 고정된 RisuAI 대체값 {DisplayValue(field.MissingFallback)}을 사용합니다.",
+            _ => "프리셋에 이 필드를 기록하지 않습니다. 불러올 때 RisuAI 설정 값을 undefined로 제거합니다."
+        };
+        return result;
+    }
     static string DisplayValue(Value? value)
     {
-        string text = value is null ? "없음" : value.Text() ?? Scalar(value) ?? ValueJson.Format(value) ?? "원본 값";
+        string text = value is null ? "없음" : value.Text() is string stringValue ? stringValue.Length == 0 ? "\"\" (빈 문자열)" : stringValue : Scalar(value) ?? ValueJson.Format(value) ?? "원본 값";
         text = text.Replace("\r", "").Replace("\n", " "); return text.Length > 120 ? text[..117] + "..." : text;
     }
-    static string Validate(Value value, PresetField field)
+    static FieldValidation Validate(Value value, PresetField field)
     {
+        bool numericChoices = field.Choices.Length > 0 && field.Choices.All(v => long.TryParse(v.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _));
         bool validType = field.Kind switch
         {
             PresetFieldKind.Boolean => value.Raw?[0] is 0xc2 or 0xc3,
             PresetFieldKind.Number => IsNumeric(value),
-            PresetFieldKind.Select => Scalar(value) is string selected && field.Choices.Any(v => v.Value == selected) && (field.Default?.Text() is not null ? value.Text() is not null : IsNumeric(value)),
+            PresetFieldKind.Select => Scalar(value) is string selected && field.Choices.Any(v => v.Value == selected) && (numericChoices ? IsNumeric(value) : value.Text() is not null),
             PresetFieldKind.StringArray => value.Items is not null && value.Items.All(v => v.Text() is not null),
             PresetFieldKind.Json => value.IsMap || value.IsArray,
             _ => value.Text() is not null
         };
-        bool range = true;
-        if (validType && field.Kind == PresetFieldKind.Number && double.TryParse(Scalar(value), NumberStyles.Float, CultureInfo.InvariantCulture, out double number)) range = (field.Min is null || number >= field.Min) && (field.Max is null || number <= field.Max);
-        if (validType && range) return "";
-        string constraint = field.Min is not null || field.Max is not null ? $" 허용 범위: {field.Min?.ToString(CultureInfo.InvariantCulture) ?? "제한 없음"}~{field.Max?.ToString(CultureInfo.InvariantCulture) ?? "제한 없음"}." : "";
-        return "잘못된 값입니다. RisuAI에서 정상적으로 작동하지 않을 수 있습니다." + constraint;
+        if (!validType) return new("잘못된 값입니다. RisuAI에서 정상적으로 작동하지 않을 수 있습니다. 값은 수정하지 않고 그대로 저장됩니다.", "");
+        if (field.Kind == PresetFieldKind.Number && double.TryParse(Scalar(value), NumberStyles.Float, CultureInfo.InvariantCulture, out double number)
+            && ((field.UiMin is not null && number < field.UiMin) || (field.UiMax is not null && number > field.UiMax)))
+        {
+            string range = $"{field.UiMin?.ToString(CultureInfo.InvariantCulture) ?? "제한 없음"}~{field.UiMax?.ToString(CultureInfo.InvariantCulture) ?? "제한 없음"}";
+            return new("", $"RisuAI UI에 선언된 참고 범위 {range}를 벗어났습니다. 값은 수정하지 않고 그대로 저장됩니다.");
+        }
+        return new("", "");
     }
     static bool IsNumeric(Value value) => value.Number() is not null || value.Raw?[0] is 0xca or 0xcb;
     void ChangedOther() { dirty = true; RefreshPromptPreview(); Update(); }
