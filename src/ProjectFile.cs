@@ -33,8 +33,8 @@ public static class ProjectFile
         var root = Value.Map();
         root.Set("version", Value.Int(1));
         root.Set("references", Value.Array(state.References.Select(PresetValue)));
-        root.Set("blocks", Value.Array(state.Blocks.Select(v => v.Clone())));
-        root.Set("regex", Value.Array(state.Regex.Select(v => v.Clone())));
+        root.Set("blocks", Value.Array(state.Blocks.Select(PresetSecurity.Scrubbed)));
+        root.Set("regex", Value.Array(state.Regex.Select(PresetSecurity.Scrubbed)));
         if (state.Basis is not null) root.Set("basis", PresetValue(state.Basis));
         root.Set("toggleText", Value.String(state.ToggleText));
         var toggleValues = Value.Map();
@@ -113,6 +113,7 @@ public static class ProjectFile
 
     static Value PresetValue(Preset preset)
     {
+        preset = PresetSecurity.Sanitized(preset);
         var value = Value.Map();
         value.Set("path", Value.String(preset.Path));
         value.Set("envelope", preset.Envelope.Clone());

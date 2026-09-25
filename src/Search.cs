@@ -159,15 +159,13 @@ public sealed partial class MainWindow
         var regex = scope == 0 ? Current?.Data.Get("regex")?.Items : regexScripts;
         if (regex is not null)
         {
-            var regexValue = new Value { Items = regex };
-            foreach (var item in ValueEntries(regexValue))
+            foreach (var script in regex)
             {
-                var path = item.Path; bool key = item.Key;
-                yield return new(item.Text, (start, length) =>
+                foreach (string key in new[] { "comment", "type", "in", "out", "flag" })
                 {
-                    EnsureWorkEditor(scope); var root = LogicalDescendants<Panel>(SearchRoot(scope)).FirstOrDefault(p => p.Tag is RegexRoot tag && ReferenceEquals(tag.Items, regex));
-                    if (root is not null) LocateValue(root, path, key, start, length);
-                });
+                    string text = script.Str(key); if (text.Length == 0) continue; string field = key;
+                    yield return new(text, (start, length) => LocateRegex(scope, script, field, start, length));
+                }
             }
         }
         yield return new(scope == 0 ? Current?.Data.Str("customPromptTemplateToggle") ?? "" : customToggleText, (start, length) =>
@@ -176,14 +174,21 @@ public sealed partial class MainWindow
             var editor = scope == 1 ? toggleEditor : LogicalDescendants<TextBox>(root).FirstOrDefault(t => Equals(t.Tag, "SearchToggleConfig"));
             if (editor is not null) MarkSearch(editor, start, length);
         });
-        if (preset is not null) foreach (var item in ValueEntries(preset.Data, true))
+        if (preset is not null)
         {
-            var path = item.Path; bool key = item.Key;
-            yield return new(item.Text, (start, length) =>
+            foreach (var field in PresetSchema.Fields)
             {
-                EnsureWorkEditor(scope); var root = LogicalDescendants<Panel>(SearchRoot(scope)).FirstOrDefault(p => p.Tag is OtherRoot tag && ReferenceEquals(tag.Data, preset.Data));
-                if (root is not null) LocateValue(root, path, key, start, length);
-            });
+                var known = field;
+                yield return new($"{field.Label} ({field.Key}) · {FieldTypeLabel(field)}", (start, length) => LocateOther(scope, preset.Data, known.Key, true, start, length));
+                if (preset.Data.Get(field.Key) is { } value && Scalar(value) is string scalar)
+                    yield return new(scalar, (start, length) => LocateOther(scope, preset.Data, known.Key, false, start, length));
+            }
+            foreach (var pair in preset.Data.Fields ?? [])
+            {
+                string? key = pair.Key.Text(); if (!OtherKey(key) || PresetSchema.KnownKeys.Contains(key!)) continue; string unknown = key!;
+                yield return new(unknown, (start, length) => LocateOther(scope, preset.Data, unknown, true, start, length));
+                if (ValueJson.Format(pair.Item) is string json) yield return new(json, (start, length) => LocateOther(scope, preset.Data, unknown, false, start, length));
+            }
         }
     }
     static IEnumerable<(string Text, int[] Path, bool Key)> ValueEntries(Value value, bool otherOnly = false, int[]? prefix = null)
@@ -193,6 +198,7 @@ public sealed partial class MainWindow
         for (int i = 0; i < count; i++)
         {
             var name = value.Fields?[i].Key.Text(); if (otherOnly && !OtherKey(name)) continue;
+            if (name is not null && PresetSchema.SensitiveKeys.Contains(name)) continue;
             var path = prefix.Append(i).ToArray(); var child = value.Fields is not null ? value.Fields[i].Item : value.Items![i];
             if (name is not null) yield return (name, path, true);
             if (child.IsMap || child.IsArray) { foreach (var nested in ValueEntries(child, false, path)) yield return nested; }
@@ -217,6 +223,28 @@ public sealed partial class MainWindow
         view.Settings.Children.Clear(); BuildValues(view.Settings, block, false);
         view.SettingsExpander.Visibility = Visibility.Visible; view.SettingsExpander.IsExpanded = true;
         LocateValue(view.Settings, path, key, start, length);
+    }
+    void LocateRegex(int scope, Value script, string key, int start, int length)
+    {
+        EnsureWorkEditor(scope); var root = SearchRoot(scope);
+        var card = LogicalDescendants<Expander>(root).FirstOrDefault(e => e.Tag is RegexCard tag && ReferenceEquals(tag.Script, script));
+        if (card is null) return; EnsureSectionExpanded(card); card.IsExpanded = true; card.UpdateLayout();
+        var target = LogicalDescendants<FrameworkElement>(card).FirstOrDefault(e => e.Tag is FieldAddress address && ReferenceEquals(address.Owner, script) && address.Key == key);
+        if (target is not null) MarkSearch(target, start, length); else MarkSearch((FrameworkElement)card.Header, 0, Math.Min(length, ((FrameworkElement)card.Header).ActualWidth > 0 ? length : 0));
+    }
+    void LocateOther(int scope, Value data, string key, bool label, int start, int length)
+    {
+        EnsureWorkEditor(scope); var root = SearchRoot(scope);
+        var mode = LogicalDescendants<FrameworkElement>(root).FirstOrDefault(e => e.Tag is OtherFieldAddress address && ReferenceEquals(address.Data, data) && address.Key == key);
+        FrameworkElement? target = null;
+        if (label && mode is not null)
+        {
+            var panel = (mode.Tag as OtherFieldAddress)?.Editor;
+            target = panel is null ? mode : LogicalDescendants<TextBlock>(panel).FirstOrDefault();
+        }
+        target ??= LogicalDescendants<FrameworkElement>(root).FirstOrDefault(e => e.Tag is FieldAddress address && ReferenceEquals(address.Owner, data) && address.Key == key);
+        target ??= mode;
+        if (target is not null) { EnsureSectionExpanded(target); for (DependencyObject? parent = target; parent is not null; parent = LogicalTreeHelper.GetParent(parent)) if (parent is Expander expander) expander.IsExpanded = true; MarkSearch(target, start, length); }
     }
     void LocateValue(Panel root, int[] path, bool key, int start, int length)
     {
