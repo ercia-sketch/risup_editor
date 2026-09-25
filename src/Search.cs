@@ -139,7 +139,7 @@ public sealed partial class MainWindow
             }
             yield break;
         }
-        Preset? preset = scope == 0 ? Current : basis;
+        Value? otherData = scope == 0 ? Current?.Data : basis?.Data ?? draftOther;
         var sourceBlocks = scope == 0 ? Current?.Blocks : blocks;
         foreach (var block in sourceBlocks ?? [])
         {
@@ -174,20 +174,20 @@ public sealed partial class MainWindow
             var editor = scope == 1 ? toggleEditor : LogicalDescendants<TextBox>(root).FirstOrDefault(t => Equals(t.Tag, "SearchToggleConfig"));
             if (editor is not null) MarkSearch(editor, start, length);
         });
-        if (preset is not null)
+        if (otherData is not null)
         {
             foreach (var field in PresetSchema.Fields)
             {
                 var known = field;
-                yield return new($"{field.Label} ({field.Key}) · {FieldTypeLabel(field)}", (start, length) => LocateOther(scope, preset.Data, known.Key, true, start, length));
-                if (preset.Data.Get(field.Key) is { } value && Scalar(value) is string scalar)
-                    yield return new(scalar, (start, length) => LocateOther(scope, preset.Data, known.Key, false, start, length));
+                yield return new($"{field.Label} ({field.Key}) · {FieldTypeLabel(field)}", (start, length) => LocateOther(scope, otherData, known.Key, true, start, length));
+                if (otherData.Get(field.Key) is { } value && Scalar(value) is string scalar)
+                    yield return new(scalar, (start, length) => LocateOther(scope, otherData, known.Key, false, start, length));
             }
-            foreach (var pair in preset.Data.Fields ?? [])
+            foreach (var pair in otherData.Fields ?? [])
             {
                 string? key = pair.Key.Text(); if (!OtherKey(key) || PresetSchema.KnownKeys.Contains(key!)) continue; string unknown = key!;
-                yield return new(unknown, (start, length) => LocateOther(scope, preset.Data, unknown, true, start, length));
-                if (ValueJson.Format(pair.Item) is string json) yield return new(json, (start, length) => LocateOther(scope, preset.Data, unknown, false, start, length));
+                yield return new(unknown, (start, length) => LocateOther(scope, otherData, unknown, true, start, length));
+                if (ValueJson.Format(pair.Item) is string json) yield return new(json, (start, length) => LocateOther(scope, otherData, unknown, false, start, length));
             }
         }
     }

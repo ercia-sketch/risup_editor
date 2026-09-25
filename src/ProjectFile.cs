@@ -10,6 +10,7 @@ public sealed class EditorProject
     public List<Value> Blocks { get; } = new();
     public List<Value> Regex { get; } = new();
     public Preset? Basis { get; set; }
+    public Value DraftOther { get; set; } = Value.Map();
     public string ToggleText { get; set; } = "";
     public Dictionary<string, string> ToggleValues { get; } = new();
     public HashSet<string> CustomOtherFields { get; } = new(StringComparer.Ordinal);
@@ -37,6 +38,7 @@ public static class ProjectFile
         root.Set("blocks", Value.Array(state.Blocks.Select(PresetSecurity.Scrubbed)));
         root.Set("regex", Value.Array(state.Regex.Select(PresetSecurity.Scrubbed)));
         if (state.Basis is not null) root.Set("basis", PresetValue(state.Basis));
+        root.Set("draftOther", PresetSecurity.Scrubbed(state.DraftOther));
         root.Set("toggleText", Value.String(state.ToggleText));
         var toggleValues = Value.Map();
         foreach (var pair in state.ToggleValues) toggleValues.Set(pair.Key, Value.String(pair.Value));
@@ -89,6 +91,7 @@ public static class ProjectFile
         var state = new EditorProject
         {
             Basis = root.Get("basis") is { } b ? ReadPreset(b) : null,
+            DraftOther = root.Get("draftOther")?.Clone() ?? Value.Map(),
             ToggleText = root.Str("toggleText"),
             SelectedTab = (int)(root.Get("selectedTab")?.Number() ?? -1),
             SelectedBlock = (int)(root.Get("selectedBlock")?.Number() ?? -1),

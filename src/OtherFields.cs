@@ -38,7 +38,9 @@ public sealed partial class MainWindow
         && !PresetSchema.SensitiveKeys.Contains(key);
     void EnsureBasis(Preset source)
     {
-        basis ??= new Preset { Path = source.Path, Envelope = source.Envelope.Clone(), Data = Value.Map() };
+        if (basis is not null) return;
+        basis = new Preset { Path = source.Path, Envelope = source.Envelope.Clone(), Data = draftOther };
+        draftOther = Value.Map();
     }
     static Preset OtherPreset(Preset source)
     {
@@ -55,7 +57,7 @@ public sealed partial class MainWindow
     {
         if (Current is null) return;
         if (MessageBox.Show(this, "현재 작업의 기타 정보를 선택한 참조 프리셋 값으로 덮어씁니다.\n\n프롬프트 블록, 토글, 정규식은 유지됩니다. 계속하시겠습니까?", "기타 정보 덮어쓰기", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        Remember(); basis = OtherPreset(Current); customOtherFields.Clear(); workSections = null; dirty = true; RenderWork(); Update("기타 정보를 덮어썼습니다. 블록, 토글, 정규식은 유지되었습니다.");
+        Remember(); basis = OtherPreset(Current); draftOther = Value.Map(); customOtherFields.Clear(); workSections = null; dirty = true; RenderWork(); Update("기타 정보를 덮어썼습니다. 블록, 토글, 정규식은 유지되었습니다.");
     }
     void AppendSections(Panel panel, Preset? preset, bool editable, HashSet<string> collapsed)
     {
@@ -73,9 +75,9 @@ public sealed partial class MainWindow
         BuildRegexEditor(regex, sourceRegex.Items!, editable, regexSection.Title);
         var otherSection = AddSection(panel, "other", "기타", collapsed); var other = otherSection.Body;
         if (editable && preset is null && Current is not null) { EnsureBasis(Current); preset = basis; sectionsBasis = basis; }
-        var data = preset?.Data ?? Value.Map();
+        var data = preset?.Data ?? draftOther;
         var otherBody = new StackPanel { Tag = new OtherRoot(data) }; other.Children.Add(otherBody);
-        BuildOtherEditor(otherBody, data, editable && preset is not null);
+        BuildOtherEditor(otherBody, data, editable);
     }
 
     void BuildRegexEditor(Panel target, List<Value> items, bool editable, TextBlock sectionTitle)
