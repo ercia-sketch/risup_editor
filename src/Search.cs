@@ -286,11 +286,13 @@ public sealed partial class MainWindow
         element.UpdateLayout();
         if (element is TextBox box)
         {
+            IInputElement? previousFocus = Keyboard.FocusedElement;
             var old = box.SelectionBrush; double oldOpacity = box.SelectionOpacity; bool inactive = box.IsInactiveSelectionHighlightEnabled; object oldInactive = box.Resources[SystemColors.InactiveSelectionHighlightBrushKey]; object oldText = box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey];
             box.SelectionBrush = Brushes.Yellow; box.SelectionOpacity = 1; box.IsInactiveSelectionHighlightEnabled = true; box.Resources[SystemColors.InactiveSelectionHighlightBrushKey] = Brushes.Yellow; box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey] = Brushes.Black;
-            box.Select(Math.Min(start, box.Text.Length), Math.Min(length, Math.Max(0, box.Text.Length - start)));
+            box.Focus(); box.Select(Math.Min(start, box.Text.Length), Math.Min(length, Math.Max(0, box.Text.Length - start))); box.UpdateLayout();
             Rect rect = box.GetRectFromCharacterIndex(Math.Min(start, box.Text.Length));
             if (!rect.IsEmpty) { box.BringIntoView(rect); CenterSearchResult(box, rect); } else box.BringIntoView();
+            if (previousFocus is not null) Keyboard.Focus(previousFocus);
             clearSearchMark = () => { box.Select(box.SelectionStart, 0); box.SelectionBrush = old; box.SelectionOpacity = oldOpacity; box.IsInactiveSelectionHighlightEnabled = inactive; RestoreResource(box, SystemColors.InactiveSelectionHighlightBrushKey, oldInactive); RestoreResource(box, SystemColors.InactiveSelectionHighlightTextBrushKey, oldText); };
         }
         else
