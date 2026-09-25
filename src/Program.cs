@@ -9,6 +9,12 @@ using Microsoft.Win32;
 
 namespace RisupEditor;
 
+public static class AppInfo
+{
+    public const string Name = "★프롬프트 에디터─슈퍼 이지★";
+    public const string Version = "v1.0.0";
+}
+
 public static class Entry
 {
     [STAThread] public static int Main(string[] args)
@@ -29,7 +35,7 @@ public static class Entry
             return app.Run(window);
         }catch(Exception ex){
             if(args.Length>0){System.Diagnostics.Trace.WriteLine(ex);return 1;}
-            MessageBox.Show(ex.Message,"Risup Editor",MessageBoxButton.OK,MessageBoxImage.Error);return 1;
+            MessageBox.Show(ex.Message,AppInfo.Name,MessageBoxButton.OK,MessageBoxImage.Error);return 1;
         }
     }
     static void Theme(Application app)
@@ -75,7 +81,7 @@ public sealed class EditorWindow : Window
     Preset? Current=>tabs.SelectedIndex>=0&&tabs.SelectedIndex<references.Count?references[tabs.SelectedIndex]:null;
     public EditorWindow()
     {
-        Title="Risup Editor";Background=new SolidColorBrush(Color.FromRgb(243,245,247));FontFamily=new FontFamily("Segoe UI, Malgun Gothic");Width=1380;Height=900;MinWidth=1000;MinHeight=620;WindowStartupLocation=WindowStartupLocation.CenterScreen;
+        Title=AppInfo.Name;Background=new SolidColorBrush(Color.FromRgb(243,245,247));FontFamily=new FontFamily("Segoe UI, Malgun Gothic");Width=1380;Height=900;MinWidth=1000;MinHeight=620;WindowStartupLocation=WindowStartupLocation.CenterScreen;
         var root=new DockPanel(){Background=Background};Content=root;
         var bottom=new Border(){Padding=new Thickness(24,10,24,10),Background=Brushes.White,BorderBrush=Line,BorderThickness=new Thickness(0,1,0,0),Child=status};DockPanel.SetDock(bottom,Dock.Bottom);root.Children.Add(bottom);
         var columns=new Grid(){Margin=new Thickness(24,18,24,18)};columns.ColumnDefinitions.Add(new ColumnDefinition(){Width=new GridLength(1,GridUnitType.Star)});columns.ColumnDefinitions.Add(new ColumnDefinition(){Width=new GridLength(16)});columns.ColumnDefinitions.Add(new ColumnDefinition(){Width=new GridLength(1,GridUnitType.Star)});root.Children.Add(columns);
@@ -97,7 +103,7 @@ public sealed class EditorWindow : Window
     void Update(string? message=null)
     {
         foreach(var refresh in refreshHeaders.Values)refresh();
-        dirty=Signature()!=savedSignature;Title=$"{(dirty?"● ":"")}Risup Editor";
+        dirty=Signature()!=savedSignature;Title=$"{(dirty?"● ":"")}{AppInfo.Name}";
         workHint.Text=$"{blocks.Count}개 블록 · {(dirty?"내보내지 않은 변경 사항이 있습니다":"변경 사항 없음")}";
         copyTab.IsEnabled=Current?.Blocks is {} list&&list.Count>0;copyBlock.IsEnabled=Current?.Blocks is {} b&&referenceIndex>=0&&referenceIndex<b.Count;
         undoButton.IsEnabled=undo.Count>0;redoButton.IsEnabled=redo.Count>0;if(message!=null)status.Text=message;else if(string.IsNullOrEmpty(status.Text))status.Text=".risup 파일을 불러와 시작하세요.  ·  Ctrl+O 불러오기  /  Ctrl+S 내보내기";
@@ -228,7 +234,7 @@ public sealed class EditorWindow : Window
     }
     void About()
     {
-        var d=Dialog("Risup Editor 정보",700,550,out var p);p.Children.Add(Text("Risup Editor 0.1.0",23));p.Children.Add(Text("로컬 프리셋 편집기 · AGPL-3.0\nRPack 포맷 리소스: Copyright (c) 2026 Kwaroran\n원본: RisuAI-reference/src/ts/rpack\n이 프로그램은 프롬프트를 실행하거나 외부 서버로 전송하지 않습니다.",13,Muted));
+        var d=Dialog($"{AppInfo.Name} 정보",700,550,out var p);p.Children.Add(Text($"{AppInfo.Name} {AppInfo.Version}",23));p.Children.Add(Text("로컬 프리셋 편집기 · AGPL-3.0\nRPack 포맷 리소스: Copyright (c) 2026 Kwaroran\n원본: RisuAI-reference/src/ts/rpack\n이 프로그램은 프롬프트를 실행하거나 외부 서버로 전송하지 않습니다.",13,Muted));
         using var s=typeof(EditorWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!;using var reader=new StreamReader(s);p.Children.Add(new TextBox(){Text=reader.ReadToEnd(),IsReadOnly=true,TextWrapping=TextWrapping.Wrap,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,Height=300,Margin=new Thickness(0,15,0,0)});d.ShowDialog();
     }
     public async void RunSelfTest(string folder)

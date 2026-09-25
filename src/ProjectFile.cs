@@ -75,7 +75,7 @@ public static class ProjectFile
         if (new FileInfo(path).Length > 128 * 1024 * 1024) throw new InvalidDataException("프로젝트 파일이 128MB를 초과합니다.");
         using var file = File.OpenRead(path);
         var magic = new byte[Magic.Length];
-        if (file.Read(magic) != magic.Length || !magic.SequenceEqual(Magic)) throw new InvalidDataException("Risup Editor 프로젝트 파일이 아닙니다.");
+        if (file.Read(magic) != magic.Length || !magic.SequenceEqual(Magic)) throw new InvalidDataException($"{AppInfo.Name} 프로젝트 파일이 아닙니다.");
         using var zip = new GZipStream(file, CompressionMode.Decompress);
         using var decoded = new MemoryStream();
         var buffer = new byte[81920];

@@ -63,7 +63,7 @@ public sealed partial class MainWindow : Window
 
     public MainWindow()
     {
-        Title = "Risup Editor"; Background = new SolidColorBrush(Color.FromRgb(243, 245, 247)); FontFamily = new FontFamily("Segoe UI, Malgun Gothic");
+        Title = AppInfo.Name; Background = new SolidColorBrush(Color.FromRgb(243, 245, 247)); FontFamily = new FontFamily("Segoe UI, Malgun Gothic");
         Width = 1540; Height = 900; MinWidth = 900; MinHeight = 560; WindowStartupLocation = WindowStartupLocation.CenterScreen;
         var root = new DockPanel { Background = Background }; Content = root;
         var bottom = new Border { Padding = new Thickness(24, 10, 24, 10), Background = Brushes.White, BorderBrush = Line, BorderThickness = new Thickness(0, 1, 0, 0), Child = CreateFooter() };
@@ -155,7 +155,7 @@ public sealed partial class MainWindow : Window
     {
         if (!searchNavigating) SearchDataChanged(); UpdateSearchLabels();
         if (selected >= 0 && selected < blocks.Count && refreshHeaders.TryGetValue(blocks[selected], out var refresh)) refresh();
-        Title = $"{(dirty ? "● " : "")}Risup Editor"; workHint.Text = $"{blocks.Count}개 블록 · {(showingPreview ? "미리보기" : dirty ? "저장하지 않은 변경 사항이 있습니다" : "변경 사항 없음")}";
+        Title = $"{(dirty ? "● " : "")}{AppInfo.Name}"; workHint.Text = $"{blocks.Count}개 블록 · {(showingPreview ? "미리보기" : dirty ? "저장하지 않은 변경 사항이 있습니다" : "변경 사항 없음")}";
         copyTab.IsEnabled = Current?.Blocks is { Count: > 0 }; copyBlock.IsEnabled = Current?.Blocks is { } b && referenceIndex >= 0 && referenceIndex < b.Count; importToggles.IsEnabled = Current is not null; importRegex.IsEnabled = Current is not null;
         previewButton.BorderBrush = showingPreview ? Accent : Line;
         undoButton.IsEnabled = undo.Count > 0; redoButton.IsEnabled = redo.Count > 0;
@@ -481,10 +481,10 @@ public sealed partial class MainWindow : Window
     }
     void SaveProject()
     {
-        if (string.IsNullOrEmpty(projectPath)) { var d = new SaveFileDialog { Filter = "Risup Editor 프로젝트|*.risupproj", DefaultExt = ".risupproj", AddExtension = true, FileName = "프롬프트 작업.risupproj", OverwritePrompt = true }; if (d.ShowDialog(this) != true) return; projectPath = d.FileName; }
+        if (string.IsNullOrEmpty(projectPath)) { var d = new SaveFileDialog { Filter = $"{AppInfo.Name} 프로젝트|*.risupproj", DefaultExt = ".risupproj", AddExtension = true, FileName = "프롬프트 작업.risupproj", OverwritePrompt = true }; if (d.ShowDialog(this) != true) return; projectPath = d.FileName; }
         try { ProjectFile.Save(CaptureProject(), projectPath); dirty = false; Update("프로젝트 저장 완료: " + projectPath); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "프로젝트 저장 실패", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
-    void LoadProjectDialog() { var d = new OpenFileDialog { Filter = "Risup Editor 프로젝트|*.risupproj" }; if (d.ShowDialog(this) == true && ConfirmDiscard()) LoadProject(d.FileName); }
+    void LoadProjectDialog() { var d = new OpenFileDialog { Filter = $"{AppInfo.Name} 프로젝트|*.risupproj" }; if (d.ShowDialog(this) == true && ConfirmDiscard()) LoadProject(d.FileName); }
     void LoadProject(string path)
     {
         try
@@ -508,7 +508,7 @@ public sealed partial class MainWindow : Window
         try { var output = basis.Clone(); output.Data.Set("name", Value.String(name.Text.Trim())); output.Data.Set("promptTemplate", Value.Array(blocks.Select(v => v.Clone()))); output.Data.Set("customPromptTemplateToggle", Value.String(NormalizeToggleNewlines(customToggleText))); output.Data.Set("regex", Value.Array(regexScripts.Select(v => v.Clone()))); PresetSecurity.Scrub(output.Data); RisupCodec.Save(output, save.FileName); Update("내보내기 완료: " + save.FileName); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "내보내기 실패", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
     Window Dialog(string title, int width, int height, out StackPanel panel) { panel = new StackPanel { Margin = new Thickness(24) }; return new Window { Title = title, Width = width, Height = height, Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, Content = panel }; }
-    void About() { var d = Dialog("Risup Editor 정보", 690, 550, out var p); p.Children.Add(Text("Risup Editor 0.7.6", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글·정규식 편집기 · AGPL-3.0", 13, Muted)); p.Children.Add(Text("설정 스키마 기준: " + PresetSchema.ReferenceVersion, 11, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly=true, TextWrapping=TextWrapping.Wrap, VerticalScrollBarVisibility=ScrollBarVisibility.Auto, Height=360, Margin=new Thickness(0,15,0,0) }); d.ShowDialog(); }
+    void About() { var d = Dialog($"{AppInfo.Name} 정보", 690, 550, out var p); p.Children.Add(Text($"{AppInfo.Name} {AppInfo.Version}", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글·정규식 편집기 · AGPL-3.0", 13, Muted)); p.Children.Add(Text("설정 스키마 기준: " + PresetSchema.ReferenceVersion, 11, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly=true, TextWrapping=TextWrapping.Wrap, VerticalScrollBarVisibility=ScrollBarVisibility.Auto, Height=360, Margin=new Thickness(0,15,0,0) }); d.ShowDialog(); }
 
     public async void RunSelfTest(string folder)
     {
