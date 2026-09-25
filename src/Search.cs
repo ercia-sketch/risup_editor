@@ -18,19 +18,22 @@ public sealed partial class MainWindow
     record BlockView(Value Block, Panel Details, Panel Settings, Expander SettingsExpander, HashSet<Value> Collapsed);
     record SearchEntry(string Text, Action<int, int> Locate);
     record SearchHit(SearchEntry Entry, int Offset, int Length);
+    enum SearchSection { Blocks, Toggles, Regex, Other, Preview }
     sealed class SearchPane
     {
-        public required string Name;
         public required DockPanel Host;
         public required Border Bar;
         public required TextBox Query;
         public required TextBlock Count;
+        public required TextBlock Label;
+        public SearchSection Section = SearchSection.Blocks;
         public List<SearchHit> Hits = new();
         public int Index = -1, Revision;
         public readonly DispatcherTimer Timer = new() { Interval = TimeSpan.FromMilliseconds(160) };
     }
     readonly List<SearchPane> searchPanes = new();
     int activeSearchPane;
+    SearchSection lastWorkSearchSection = SearchSection.Blocks;
     Action? clearSearchMark;
     bool searchNavigating;
 
@@ -41,16 +44,15 @@ public sealed partial class MainWindow
         var count = Text("0 / 0", 11, Muted); count.VerticalAlignment = VerticalAlignment.Center;
         var barContent = new DockPanel();
         var bar = new Border { Visibility = Visibility.Collapsed, Padding = new Thickness(2, 4, 4, 6) };
-        var pane = new SearchPane { Name = name, Host = host, Bar = bar, Query = query, Count = count };
-        searchPanes.Add(pane);
         var label = Text(name, 10, Muted); label.Margin = new Thickness(0, 0, 0, 3);
+        var pane = new SearchPane { Host = host, Bar = bar, Query = query, Count = count, Label = label };
+        searchPanes.Add(pane);
         var wrap = new DockPanel(); DockPanel.SetDock(label, Dock.Top); wrap.Children.Add(label); wrap.Children.Add(barContent); bar.Child = wrap;
         var buttons = new StackPanel { Orientation = Orientation.Horizontal };
         buttons.Children.Add(count); buttons.Children.Add(Button("↑", () => NavigateSearch(scope, -1), compact: true)); buttons.Children.Add(Button("↓", () => NavigateSearch(scope, 1), compact: true)); buttons.Children.Add(Button("×", () => CloseSearch(scope), compact: true));
         DockPanel.SetDock(buttons, Dock.Right); barContent.Children.Add(buttons); barContent.Children.Add(query);
         DockPanel.SetDock(bar, Dock.Top); host.Children.Insert(1, bar);
-        host.PreviewMouseDown += (_, _) => activeSearchPane = scope;
-        host.GotKeyboardFocus += (_, _) => { if (!searchNavigating) activeSearchPane = scope; };
+        query.GotKeyboardFocus += (_, _) => ActivateSearchPane(scope);
         pane.Timer.Tick += async (_, _) => { pane.Timer.Stop(); await RefreshSearch(scope); };
         query.TextChanged += (_, _) => ScheduleSearch(scope);
         query.PreviewKeyDown += (_, e) =>
@@ -59,10 +61,49 @@ public sealed partial class MainWindow
             if (e.Key == Key.Escape) { CloseSearch(scope); e.Handled = true; }
         };
         host.AddHandler(TextBoxBase.TextChangedEvent, new TextChangedEventHandler((_, e) => { if (e.OriginalSource != query && !searchNavigating) ScheduleSearch(scope); }));
+        UpdateSearchLabel(scope);
+    }
+    void ActivateSearchPane(int scope)
+    {
+        if (searchNavigating || scope < 0 || scope >= searchPanes.Count) return;
+        activeSearchPane = scope; UpdateSearchLabel(scope);
     }
     void OpenSearch()
     {
+        if (activeSearchPane < 0 || activeSearchPane >= searchPanes.Count) return;
+        if (activeSearchPane == 1) SetSearchScope(1, showingPreview ? SearchSection.Preview : searchPanes[1].Section == SearchSection.Preview ? lastWorkSearchSection : searchPanes[1].Section);
         var pane = searchPanes[activeSearchPane]; pane.Bar.Visibility = Visibility.Visible; pane.Query.Focus(); pane.Query.SelectAll(); ScheduleSearch(activeSearchPane);
+    }
+    void DisableSearch() { if (!searchNavigating) activeSearchPane = -1; }
+    void SetSearchScope(int scope, SearchSection section)
+    {
+        if (searchNavigating || scope < 0 || scope >= searchPanes.Count) return;
+        ActivateSearchPane(scope);
+        if (scope == 1 && section != SearchSection.Preview) lastWorkSearchSection = section;
+        var pane = searchPanes[scope];
+        if (pane.Section == section) { UpdateSearchLabel(scope); return; }
+        pane.Section = section; pane.Hits.Clear(); pane.Index = -1; pane.Count.Text = "0 / 0";
+        clearSearchMark?.Invoke(); clearSearchMark = null; UpdateSearchLabel(scope); ScheduleSearch(scope);
+    }
+    void SetSearchScope(int scope, string key) => SetSearchScope(scope, key switch
+    {
+        "toggles" => SearchSection.Toggles,
+        "regex" => SearchSection.Regex,
+        "other" => SearchSection.Other,
+        _ => SearchSection.Blocks
+    });
+    void UpdateSearchLabels() { for (int i = 0; i < searchPanes.Count; i++) UpdateSearchLabel(i); }
+    void UpdateSearchLabel(int scope)
+    {
+        if (scope < 0 || scope >= searchPanes.Count) return;
+        string section = searchPanes[scope].Section switch { SearchSection.Blocks => "프롬프트 블록", SearchSection.Toggles => "토글", SearchSection.Regex => "정규식", SearchSection.Other => "기타", _ => "미리보기" };
+        if (scope == 0)
+        {
+            string name = Current?.Data.Str("name") ?? "";
+            if (string.IsNullOrWhiteSpace(name) && Current is not null) name = System.IO.Path.GetFileNameWithoutExtension(Current.Path);
+            searchPanes[scope].Label.Text = string.IsNullOrWhiteSpace(name) ? $"참조 프리셋 · {section}" : $"참조 프리셋 · {section} ({name})";
+        }
+        else searchPanes[scope].Label.Text = $"작업 중 · {section}";
     }
     void CloseSearch(int scope)
     {
@@ -114,7 +155,9 @@ public sealed partial class MainWindow
     }
     IEnumerable<SearchEntry> SearchEntries(int scope)
     {
-        if (scope == 1 && showingPreview)
+        if (scope < 0 || scope >= searchPanes.Count) yield break;
+        SearchSection section = searchPanes[scope].Section;
+        if (scope == 1 && section == SearchSection.Preview && showingPreview)
         {
             foreach (var surface in previewTextSurfaces)
             {
@@ -128,113 +171,107 @@ public sealed partial class MainWindow
             }
             yield break;
         }
-        if (scope == 2)
+        if (section == SearchSection.Blocks)
         {
-            foreach (var def in VisibleToggles())
+            var sourceBlocks = scope == 0 ? Current?.Blocks : blocks;
+            foreach (var block in sourceBlocks ?? [])
             {
-                int line = def.Line;
-                yield return new(def.Name, (start, length) => LocateToggle(line, null, false, start, length));
-                for (int i = 0; i < def.Options.Length; i++) { int option = i; yield return new(def.Options[i], (start, length) => LocateToggle(line, option, false, start, length)); }
-                if (def.Type is "text" or "textarea") yield return new(toggleValues.GetValueOrDefault(def.Key, ""), (start, length) => LocateToggle(line, null, true, start, length));
+                foreach (string key in BlockTextKeys(block))
+                {
+                    Value? value = block.Get(key); string? text = value is null ? null : Scalar(value); if (text is null) continue;
+                    string field = key; yield return new(text, (start, length) => LocateBlockField(scope, block, field, start, length));
+                }
             }
             yield break;
         }
-        Value? otherData = scope == 0 ? Current?.Data : basis?.Data ?? draftOther;
-        var sourceBlocks = scope == 0 ? Current?.Blocks : blocks;
-        foreach (var block in sourceBlocks ?? [])
+        if (section == SearchSection.Toggles)
         {
-            if (string.IsNullOrEmpty(block.Str("name")))
-                yield return new(Label(block), (start, length) =>
-                {
-                    EnsureWorkEditor(scope);
-                    var card = LogicalDescendants<Border>(SearchRoot(scope)).FirstOrDefault(b => b.Tag is BlockView view && ReferenceEquals(view.Block, block));
-                    if (card?.Tag is BlockView view) { view.Collapsed.Remove(block); view.Details.Visibility = Visibility.Visible; var title = LogicalDescendants<TextBlock>(card).FirstOrDefault(t => t.Text.EndsWith("   " + Label(block))); if (title is not null) MarkSearch(title, Math.Max(0, title.Text.Length - Label(block).Length) + start, length); }
-                });
-            foreach (var item in ValueEntries(block))
+            string text = scope == 0 ? Current?.Data.Str("customPromptTemplateToggle") ?? "" : customToggleText;
+            yield return new(text, (start, length) =>
             {
-                var path = item.Path; bool key = item.Key;
-                yield return new(item.Text, (start, length) => LocateBlock(scope, block, path, key, start, length));
-            }
+                var root = SearchRoot(scope); var editor = scope == 1 ? toggleEditor : LogicalDescendants<TextBox>(root).FirstOrDefault(t => Equals(t.Tag, "SearchToggleConfig"));
+                if (editor is not null) MarkSearch(editor, start, length);
+            });
+            yield break;
         }
-        var regex = scope == 0 ? Current?.Data.Get("regex")?.Items : regexScripts;
-        if (regex is not null)
+        if (section == SearchSection.Regex)
         {
-            foreach (var script in regex)
+            var regex = scope == 0 ? Current?.Data.Get("regex")?.Items : regexScripts;
+            foreach (var script in regex ?? [])
             {
-                foreach (string key in new[] { "comment", "type", "in", "out", "flag" })
+                foreach (string key in new[] { "comment", "in", "out" })
                 {
                     string text = script.Str(key); if (text.Length == 0) continue; string field = key;
                     yield return new(text, (start, length) => LocateRegex(scope, script, field, start, length));
                 }
+                if (script.Get("ableFlag")?.Boolean() == true && System.Text.RegularExpressions.Regex.Match(script.Str("flag"), @"<order (-?\d+)>") is { Success: true } order)
+                {
+                    string text = order.Groups[1].Value;
+                    yield return new(text, (start, length) => LocateRegexOrder(scope, script, text, start, length));
+                }
             }
+            yield break;
         }
-        yield return new(scope == 0 ? Current?.Data.Str("customPromptTemplateToggle") ?? "" : customToggleText, (start, length) =>
-        {
-            EnsureWorkEditor(scope); var root = SearchRoot(scope);
-            var editor = scope == 1 ? toggleEditor : LogicalDescendants<TextBox>(root).FirstOrDefault(t => Equals(t.Tag, "SearchToggleConfig"));
-            if (editor is not null) MarkSearch(editor, start, length);
-        });
+        if (section != SearchSection.Other) yield break;
+        Value? otherData = scope == 0 ? Current?.Data : basis?.Data ?? draftOther;
         if (otherData is not null)
         {
             foreach (var field in PresetSchema.Fields)
             {
-                var known = field;
-                yield return new($"{field.Label} ({field.Key}) · {FieldTypeLabel(field)}", (start, length) => LocateOther(scope, otherData, known.Key, true, start, length));
-                if (otherData.Get(field.Key) is { } value && Scalar(value) is string scalar)
-                    yield return new(scalar, (start, length) => LocateOther(scope, otherData, known.Key, false, start, length));
+                Value? value = otherData.Get(field.Key); if (value is null || !OtherTextKind(field.Kind)) continue;
+                bool forceCustom = scope == 1 && customOtherFields.Contains(field.Key); if (FieldMode(value, field, forceCustom) != "custom") continue;
+                string? text = OtherText(value, field.Kind); if (text is null) continue; string key = field.Key;
+                yield return new(text, (start, length) => LocateOther(scope, otherData, key, false, start, length));
             }
             foreach (var pair in otherData.Fields ?? [])
             {
                 string? key = pair.Key.Text(); if (!OtherKey(key) || PresetSchema.KnownKeys.Contains(key!)) continue; string unknown = key!;
-                yield return new(unknown, (start, length) => LocateOther(scope, otherData, unknown, true, start, length));
                 if (ValueJson.Format(pair.Item) is string json) yield return new(json, (start, length) => LocateOther(scope, otherData, unknown, false, start, length));
             }
         }
     }
-    static IEnumerable<(string Text, int[] Path, bool Key)> ValueEntries(Value value, bool otherOnly = false, int[]? prefix = null)
+    static IEnumerable<string> BlockTextKeys(Value block)
     {
-        prefix ??= [];
-        int count = value.Fields?.Count ?? value.Items?.Count ?? 0;
-        for (int i = 0; i < count; i++)
-        {
-            var name = value.Fields?[i].Key.Text(); if (otherOnly && !OtherKey(name)) continue;
-            if (name is not null && PresetSchema.SensitiveKeys.Contains(name)) continue;
-            var path = prefix.Append(i).ToArray(); var child = value.Fields is not null ? value.Fields[i].Item : value.Items![i];
-            if (name is not null) yield return (name, path, true);
-            if (child.IsMap || child.IsArray) { foreach (var nested in ValueEntries(child, false, path)) yield return nested; }
-            else { string? text = child.Raw?[0] is 0xc2 or 0xc3 ? child.Boolean().ToString() : Scalar(child); if (text is not null) yield return (text, path, false); }
-        }
+        yield return "name"; string type = block.Str("type");
+        if (type is "plain" or "jailbreak" or "cot" or "chatML") yield return "text";
+        else if (Inner(block)) { if (type == "authornote") yield return "defaultText"; yield return "innerFormat"; }
+        else if (type == "chat") { yield return "rangeStart"; yield return "rangeEnd"; }
+        else if (type == "cache") yield return "depth";
     }
-    DependencyObject SearchRoot(int scope) => scope == 0 ? (tabs.SelectedItem as TabItem)?.Content as DependencyObject ?? tabs : scope == 1 && showingPreview ? promptPreview : work;
-    void EnsureWorkEditor(int scope) { }
-    void LocateBlock(int scope, Value block, int[] path, bool key, int start, int length)
+    static bool OtherTextKind(PresetFieldKind kind) => kind is PresetFieldKind.Text or PresetFieldKind.Multiline or PresetFieldKind.Number or PresetFieldKind.StringArray or PresetFieldKind.Json;
+    static string? OtherText(Value value, PresetFieldKind kind) => kind switch
     {
-        EnsureWorkEditor(scope);
+        PresetFieldKind.StringArray when value.Items is not null => string.Join("\n", value.Items.Select(v => v.Text() ?? Scalar(v) ?? "")),
+        PresetFieldKind.Json => ValueJson.Format(value) ?? value.Text(),
+        _ => Scalar(value)
+    };
+    DependencyObject SearchRoot(int scope) => scope == 0 ? (tabs.SelectedItem as TabItem)?.Content as DependencyObject ?? tabs : scope == 1 && showingPreview ? promptPreview : work;
+    void LocateBlockField(int scope, Value block, string key, int start, int length)
+    {
         var card = LogicalDescendants<Border>(SearchRoot(scope)).FirstOrDefault(b => b.Tag is BlockView view && ReferenceEquals(view.Block, block));
         if (card?.Tag is not BlockView view) return;
-        EnsureSectionExpanded(card);
-        view.Collapsed.Remove(block); view.Details.Visibility = Visibility.Visible;
-        string? field = path.Length == 1 ? block.Fields?[path[0]].Key.Text() : null;
-        var target = LogicalDescendants<FrameworkElement>(card).FirstOrDefault(e => e.Tag is FieldAddress a && ReferenceEquals(a.Owner, block) && a.Key == field);
-        if (target is not null && !key)
-        {
-            MarkSearch(target, start, length); return;
-        }
-        view.Settings.Children.Clear(); BuildValues(view.Settings, block, false);
-        view.SettingsExpander.Visibility = Visibility.Visible; view.SettingsExpander.IsExpanded = true;
-        LocateValue(view.Settings, path, key, start, length);
+        EnsureSectionExpanded(card); view.Collapsed.Remove(block); view.Details.Visibility = Visibility.Visible; card.UpdateLayout();
+        var target = LogicalDescendants<FrameworkElement>(card).FirstOrDefault(e => e.Tag is FieldAddress address && ReferenceEquals(address.Owner, block) && address.Key == key);
+        if (target is not null) MarkSearch(target, start, length);
     }
     void LocateRegex(int scope, Value script, string key, int start, int length)
     {
-        EnsureWorkEditor(scope); var root = SearchRoot(scope);
+        var root = SearchRoot(scope);
         var card = LogicalDescendants<Expander>(root).FirstOrDefault(e => e.Tag is RegexCard tag && ReferenceEquals(tag.Script, script));
         if (card is null) return; EnsureSectionExpanded(card); card.IsExpanded = true; card.UpdateLayout();
         var target = LogicalDescendants<FrameworkElement>(card).FirstOrDefault(e => e.Tag is FieldAddress address && ReferenceEquals(address.Owner, script) && address.Key == key);
         if (target is not null) MarkSearch(target, start, length); else MarkSearch((FrameworkElement)card.Header, 0, Math.Min(length, ((FrameworkElement)card.Header).ActualWidth > 0 ? length : 0));
     }
+    void LocateRegexOrder(int scope, Value script, string text, int start, int length)
+    {
+        var card = LogicalDescendants<Expander>(SearchRoot(scope)).FirstOrDefault(e => e.Tag is RegexCard tag && ReferenceEquals(tag.Script, script));
+        if (card is null) return; EnsureSectionExpanded(card); card.IsExpanded = true; card.UpdateLayout();
+        var target = LogicalDescendants<TextBox>(card).FirstOrDefault(e => e.Tag is FieldAddress address && ReferenceEquals(address.Owner, script) && address.Key == "flag" && e.Text == text);
+        if (target is not null) MarkSearch(target, start, length);
+    }
     void LocateOther(int scope, Value data, string key, bool label, int start, int length)
     {
-        EnsureWorkEditor(scope); var root = SearchRoot(scope);
+        var root = SearchRoot(scope);
         var mode = LogicalDescendants<FrameworkElement>(root).FirstOrDefault(e => e.Tag is OtherFieldAddress address && ReferenceEquals(address.Data, data) && address.Key == key);
         FrameworkElement? target = null;
         if (label && mode is not null)
@@ -250,35 +287,6 @@ public sealed partial class MainWindow
             for (DependencyObject? parent = target; parent is not null; parent = LogicalTreeHelper.GetParent(parent)) if (parent is Expander expander) expander.IsExpanded = true;
             if (root is UIElement rootElement) rootElement.UpdateLayout(); target.UpdateLayout(); MarkSearch(target, start, length);
         }
-    }
-    void LocateValue(Panel root, int[] path, bool key, int start, int length)
-    {
-        EnsureSectionExpanded(root);
-        Panel current = root;
-        for (int depth = 0; depth < path.Length; depth++)
-        {
-            var row = current.Children.OfType<Panel>().FirstOrDefault(p => p.Tag is ValueRow tag && tag.Index == path[depth]); if (row is null) return;
-            if (depth == path.Length - 1)
-            {
-                FrameworkElement target = key ? LogicalDescendants<TextBlock>(row).First() : row.Children.OfType<FrameworkElement>().FirstOrDefault(e => e is TextBox or CheckBox) ?? row;
-                MarkSearch(target, start, length); return;
-            }
-            var expander = row.Children.OfType<Expander>().FirstOrDefault(); if (expander is null) return;
-            expander.IsExpanded = true; current = (Panel)expander.Content;
-        }
-    }
-    void LocateToggle(int line, int? option, bool value, int start, int length)
-    {
-        var node = LogicalDescendants<FrameworkElement>(togglePreview).FirstOrDefault(e => e.Tag is ToggleAddress a && a.Line == line); if (node is null) return;
-        for (DependencyObject? parent = LogicalTreeHelper.GetParent(node); parent is not null; parent = LogicalTreeHelper.GetParent(parent)) if (parent is Expander expander) expander.IsExpanded = true;
-        if (option is int index && LogicalDescendants<ComboBox>(node).FirstOrDefault() is { } combo)
-        {
-            combo.IsDropDownOpen = true; combo.UpdateLayout();
-            if (combo.ItemContainerGenerator.ContainerFromIndex(index) is ComboBoxItem item) MarkSearch(item, start, length); else MarkSearch(combo, start, length);
-            return;
-        }
-        FrameworkElement target = value ? LogicalDescendants<TextBox>(node).FirstOrDefault() ?? node : (FrameworkElement?)LogicalDescendants<TextBlock>(node).FirstOrDefault() ?? LogicalDescendants<CheckBox>(node).FirstOrDefault() ?? node;
-        MarkSearch(target, start, length);
     }
     void MarkSearch(FrameworkElement element, int start, int length)
     {

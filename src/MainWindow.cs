@@ -88,6 +88,8 @@ public sealed partial class MainWindow : Window
         importRegex = Button("정규식 복사 →", CopyCurrentRegex, compact: true); referenceTools.Children.Add(importRegex);
         referenceTools.Children.Add(Button("기타 정보 덮어쓰기 →", OverwriteOther, compact: true));
         tabs.SizeChanged += (_, _) => ResizeTabs();
+        tabs.PreviewMouseDown += (_, _) => ActivateSearchPane(0);
+        tabs.GotKeyboardFocus += (_, _) => ActivateSearchPane(0);
         tabs.SelectionChanged += (_, e) => { if (e.Source == tabs) { if (tabs.SelectedItem is TabItem selectedTab && selectedTab.Tag is Action build) build(); if (basis is null && Current is not null) { workSections = null; RenderWork(); } referenceIndex = -1; ClearReferenceSelection(); Update(); } };
         left.Children.Add(tabs);
 
@@ -109,6 +111,8 @@ public sealed partial class MainWindow : Window
         previewControls.Children.Add(withJoinToggle);
         previewButton = Button("미리보기", TogglePromptPreview, compact: true); previewButton.BorderThickness = new Thickness(2); previewButton.BorderBrush = Line; previewControls.Children.Add(previewButton);
         Grid.SetColumn(previewControls, 1); row2.Children.Add(previewControls); middleHeader.Children.Add(row2);
+        promptPreview.PreviewMouseDown += (_, _) => SetSearchScope(1, SearchSection.Preview);
+        promptPreview.GotKeyboardFocus += (_, _) => SetSearchScope(1, SearchSection.Preview);
         workScroll.Content = work; middle.Children.Add(workScroll);
 
         var split2 = Splitter(); Grid.SetColumn(split2, 3); columns.Children.Add(split2);
@@ -130,12 +134,14 @@ public sealed partial class MainWindow : Window
         editorPanel.Children.Remove(toggleEditor); editorPanel.Children.Remove(toggleErrors);
         toggleGrid.Children.Remove(previewPanel); toggles.Children.Remove(toggleGrid); toggles.Children.Add(previewPanel);
 
-        AttachSearch(left, "참조 프리셋"); AttachSearch(middle, "작업 중"); AttachSearch(toggles, "채팅 화면 토글");
+        AttachSearch(left, "참조 프리셋 · 프롬프트 블록"); AttachSearch(middle, "작업 중 · 프롬프트 블록");
+        toggles.PreviewMouseDown += (_, _) => DisableSearch();
+        toggles.GotKeyboardFocus += (_, _) => DisableSearch();
         Closing += (_, e) => { if (!ConfirmDiscard()) e.Cancel = true; };
         PreviewKeyDown += (_, e) =>
         {
             if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.F) { OpenSearch(); e.Handled = true; }
-            else if (e.Key == Key.Escape && searchPanes[activeSearchPane].Bar.Visibility == Visibility.Visible) { CloseSearch(activeSearchPane); e.Handled = true; }
+            else if (e.Key == Key.Escape && activeSearchPane >= 0 && activeSearchPane < searchPanes.Count && searchPanes[activeSearchPane].Bar.Visibility == Visibility.Visible) { CloseSearch(activeSearchPane); e.Handled = true; }
             else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.O) { OpenDialog(); e.Handled = true; }
             else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.S) { SaveProject(); e.Handled = true; }
             else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.Z) { Undo(); e.Handled = true; }
@@ -147,7 +153,7 @@ public sealed partial class MainWindow : Window
     static GridSplitter Splitter() => new() { Width = 5, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Stretch, Background = Line, ResizeDirection = GridResizeDirection.Columns, ShowsPreview = true };
     void Update(string? message = null)
     {
-        if (!searchNavigating) SearchDataChanged();
+        if (!searchNavigating) SearchDataChanged(); UpdateSearchLabels();
         if (selected >= 0 && selected < blocks.Count && refreshHeaders.TryGetValue(blocks[selected], out var refresh)) refresh();
         Title = $"{(dirty ? "● " : "")}Risup Editor"; workHint.Text = $"{blocks.Count}개 블록 · {(showingPreview ? "미리보기" : dirty ? "저장하지 않은 변경 사항이 있습니다" : "변경 사항 없음")}";
         copyTab.IsEnabled = Current?.Blocks is { Count: > 0 }; copyBlock.IsEnabled = Current?.Blocks is { } b && referenceIndex >= 0 && referenceIndex < b.Count; importToggles.IsEnabled = Current is not null; importRegex.IsEnabled = Current is not null;
@@ -199,7 +205,7 @@ public sealed partial class MainWindow : Window
             {
             if (tab.Content is not null) return;
             var body = new StackPanel { Margin = new Thickness(0, 12, 6, 0) };
-            var blockSection = AddSection(body, "blocks", "프롬프트 블록", collapsedSections, true); var blockBody = blockSection.Body;
+            var blockSection = AddSection(body, "blocks", "프롬프트 블록", collapsedSections, 0, true); var blockBody = blockSection.Body;
             if (preset.Blocks is null) blockBody.Children.Add(Card(Text("이 프리셋에는 블록형 promptTemplate이 없습니다.", 14, Muted)));
             else for (int i = 0; i < preset.Blocks.Count; i++)
             {
@@ -237,7 +243,7 @@ public sealed partial class MainWindow : Window
     void RenderWork()
     {
         work.Children.Clear(); workCards.Clear(); refreshHeaders.Clear();
-        var blockSection = AddSection(work, "blocks", "프롬프트 블록", collapsedWorkSections, true); var blockBody = blockSection.Body;
+        var blockSection = AddSection(work, "blocks", "프롬프트 블록", collapsedWorkSections, 1, true); var blockBody = blockSection.Body;
         if (blocks.Count == 0) { blockBody.Children.Add(Card(Text("아직 블록이 없습니다.", 14, Muted))); }
         else for (int i = 0; i < blocks.Count; i++) { var block = blocks[i]; var card = BuildBlock(block, i, true, collapsedWork); workCards[block] = card; blockBody.Children.Add(card); }
         blockBody.Children.Add(Button("+ 블록", AddBlock, compact: true));
@@ -455,7 +461,7 @@ public sealed partial class MainWindow : Window
     }
     void ToggleValueChanged() { dirty = true; RefreshPromptPreview(); Update(); }
 
-    void TogglePromptPreview() { showingPreview = !showingPreview; workScroll.Content = showingPreview ? promptPreview : work; RefreshPromptPreview(); dirty = true; Update(); }
+    void TogglePromptPreview() { showingPreview = !showingPreview; SetSearchScope(1, showingPreview ? SearchSection.Preview : lastWorkSearchSection); workScroll.Content = showingPreview ? promptPreview : work; RefreshPromptPreview(); dirty = true; Update(); }
     void RefreshPromptPreview() { if (showingPreview) RenderPromptPreview(PromptPreviewEngine.Build(blocks, basis, toggleValues, previewWithJoin)); }
 
     EditorProject CaptureProject()
@@ -502,7 +508,7 @@ public sealed partial class MainWindow : Window
         try { var output = basis.Clone(); output.Data.Set("name", Value.String(name.Text.Trim())); output.Data.Set("promptTemplate", Value.Array(blocks.Select(v => v.Clone()))); output.Data.Set("customPromptTemplateToggle", Value.String(NormalizeToggleNewlines(customToggleText))); output.Data.Set("regex", Value.Array(regexScripts.Select(v => v.Clone()))); PresetSecurity.Scrub(output.Data); RisupCodec.Save(output, save.FileName); Update("내보내기 완료: " + save.FileName); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "내보내기 실패", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
     Window Dialog(string title, int width, int height, out StackPanel panel) { panel = new StackPanel { Margin = new Thickness(24) }; return new Window { Title = title, Width = width, Height = height, Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, Content = panel }; }
-    void About() { var d = Dialog("Risup Editor 정보", 690, 550, out var p); p.Children.Add(Text("Risup Editor 0.7.5", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글·정규식 편집기 · AGPL-3.0", 13, Muted)); p.Children.Add(Text("설정 스키마 기준: " + PresetSchema.ReferenceVersion, 11, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly=true, TextWrapping=TextWrapping.Wrap, VerticalScrollBarVisibility=ScrollBarVisibility.Auto, Height=360, Margin=new Thickness(0,15,0,0) }); d.ShowDialog(); }
+    void About() { var d = Dialog("Risup Editor 정보", 690, 550, out var p); p.Children.Add(Text("Risup Editor 0.7.6", 23)); p.Children.Add(Text("로컬 프리셋·커스텀 토글·정규식 편집기 · AGPL-3.0", 13, Muted)); p.Children.Add(Text("설정 스키마 기준: " + PresetSchema.ReferenceVersion, 11, Muted)); using var s = typeof(MainWindow).Assembly.GetManifestResourceStream("RisupEditor.LICENSE-AGPL.txt")!; using var reader=new StreamReader(s); p.Children.Add(new TextBox { Text = reader.ReadToEnd(), IsReadOnly=true, TextWrapping=TextWrapping.Wrap, VerticalScrollBarVisibility=ScrollBarVisibility.Auto, Height=360, Margin=new Thickness(0,15,0,0) }); d.ShowDialog(); }
 
     public async void RunSelfTest(string folder)
     {

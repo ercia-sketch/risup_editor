@@ -15,7 +15,7 @@ public sealed partial class MainWindow
     sealed record OtherFieldAddress(Value Data, string Key, FrameworkElement Editor);
     sealed record FieldValidation(string Error, string Notice);
 
-    SectionView AddSection(Panel panel, string key, string title, HashSet<string> collapsed, bool first = false)
+    SectionView AddSection(Panel panel, string key, string title, HashSet<string> collapsed, int searchPane, bool first = false)
     {
         var outer = new StackPanel { Margin = new Thickness(0, first ? 0 : 14, 8, 12) };
         if (!first) outer.Children.Add(new Separator { Background = Line, Margin = new Thickness(0, 0, 0, 10) });
@@ -30,7 +30,10 @@ public sealed partial class MainWindow
         toggle = Button("접기", () => { if (!collapsed.Add(key)) collapsed.Remove(key); Apply(); dirty = true; Update(); }, compact: true);
         toggle.Width = 48; toggle.MinHeight = 25; toggle.Padding = new Thickness(3, 2, 3, 2); toggle.Margin = new Thickness(0, 0, 8, 0); DockPanel.SetDock(toggle, Dock.Left); header.Children.Add(toggle);
         var heading = Text(title, 14); heading.FontWeight = FontWeights.SemiBold; heading.VerticalAlignment = VerticalAlignment.Center; header.Children.Add(heading);
-        var view = new SectionView(key, body, toggle, heading, collapsed); outer.Tag = view; outer.Children.Add(body); panel.Children.Add(outer); Apply(); return view;
+        var view = new SectionView(key, body, toggle, heading, collapsed); outer.Tag = view; outer.Children.Add(body); panel.Children.Add(outer);
+        outer.PreviewMouseDown += (_, _) => SetSearchScope(searchPane, key);
+        outer.GotKeyboardFocus += (_, _) => SetSearchScope(searchPane, key);
+        Apply(); return view;
     }
 
     static bool OtherKey(string? key) => key is not null
@@ -61,7 +64,8 @@ public sealed partial class MainWindow
     }
     void AppendSections(Panel panel, Preset? preset, bool editable, HashSet<string> collapsed)
     {
-        var toggleSection = AddSection(panel, "toggles", "토글", collapsed); var toggles = toggleSection.Body;
+        int searchPane = editable ? 1 : 0;
+        var toggleSection = AddSection(panel, "toggles", "토글", collapsed, searchPane); var toggles = toggleSection.Body;
         if (editable)
         {
             if (toggleEditor.Parent is Panel previous) previous.Children.Remove(toggleEditor);
@@ -71,9 +75,9 @@ public sealed partial class MainWindow
         }
         else toggles.Children.Add(new SyntaxBox { Tag = "SearchToggleConfig", Text = preset?.Data.Str("customPromptTemplateToggle") ?? "", IsReadOnly = true, TextWrapping = TextWrapping.Wrap, MinHeight = 40 });
         var sourceRegex = editable ? new Value { Items = regexScripts } : preset?.Data.Get("regex") is { IsArray: true } value ? value : new Value { Items = new() };
-        var regexSection = AddSection(panel, "regex", $"정규식 · {sourceRegex.Items?.Count ?? 0}개", collapsed); var regex = regexSection.Body;
+        var regexSection = AddSection(panel, "regex", $"정규식 · {sourceRegex.Items?.Count ?? 0}개", collapsed, searchPane); var regex = regexSection.Body;
         BuildRegexEditor(regex, sourceRegex.Items!, editable, regexSection.Title);
-        var otherSection = AddSection(panel, "other", "기타", collapsed); var other = otherSection.Body;
+        var otherSection = AddSection(panel, "other", "기타", collapsed, searchPane); var other = otherSection.Body;
         if (editable && preset is null && Current is not null) { EnsureBasis(Current); preset = basis; sectionsBasis = basis; }
         var data = preset?.Data ?? draftOther;
         var otherBody = new StackPanel { Tag = new OtherRoot(data) }; other.Children.Add(otherBody);
