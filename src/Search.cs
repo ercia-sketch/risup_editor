@@ -288,7 +288,7 @@ public sealed partial class MainWindow
         {
             IInputElement? previousFocus = Keyboard.FocusedElement;
             var old = box.SelectionBrush; double oldOpacity = box.SelectionOpacity; bool inactive = box.IsInactiveSelectionHighlightEnabled; object oldInactive = box.Resources[SystemColors.InactiveSelectionHighlightBrushKey]; object oldText = box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey];
-            box.SelectionBrush = Brushes.Yellow; box.SelectionOpacity = 1; box.IsInactiveSelectionHighlightEnabled = true; box.Resources[SystemColors.InactiveSelectionHighlightBrushKey] = Brushes.Yellow; box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey] = Brushes.Black;
+            box.SelectionBrush = Brushes.Yellow; box.SelectionOpacity = 0.55; box.IsInactiveSelectionHighlightEnabled = true; box.Resources[SystemColors.InactiveSelectionHighlightBrushKey] = Brushes.Yellow; box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey] = Brushes.Black;
             box.Focus(); box.Select(Math.Min(start, box.Text.Length), Math.Min(length, Math.Max(0, box.Text.Length - start))); box.UpdateLayout();
             Rect rect = box.GetRectFromCharacterIndex(Math.Min(start, box.Text.Length));
             if (!rect.IsEmpty) { box.BringIntoView(rect); CenterSearchResult(box, rect); } else box.BringIntoView();
@@ -321,7 +321,7 @@ public sealed partial class MainWindow
         var begin = surface.PointerAt(start); var end = surface.PointerAt(start + length); if (begin is null || end is null) return;
         IInputElement? previousFocus = Keyboard.FocusedElement;
         var box = surface.Box; var oldBrush = box.SelectionBrush; double oldOpacity = box.SelectionOpacity; bool oldEnabled = box.IsInactiveSelectionHighlightEnabled; object oldInactive = box.Resources[SystemColors.InactiveSelectionHighlightBrushKey]; object oldText = box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey];
-        box.SelectionBrush = Brushes.Yellow; box.SelectionOpacity = 1; box.IsInactiveSelectionHighlightEnabled = true; box.Resources[SystemColors.InactiveSelectionHighlightBrushKey] = Brushes.Yellow; box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey] = Brushes.Black;
+        box.SelectionBrush = Brushes.Yellow; box.SelectionOpacity = 0.55; box.IsInactiveSelectionHighlightEnabled = true; box.Resources[SystemColors.InactiveSelectionHighlightBrushKey] = Brushes.Yellow; box.Resources[SystemColors.InactiveSelectionHighlightTextBrushKey] = Brushes.Black;
         box.Focus(); box.Selection.Select(begin, end); box.UpdateLayout();
         Rect rect = begin.GetCharacterRect(LogicalDirection.Forward); if (!rect.IsEmpty) { box.BringIntoView(rect); CenterSearchResult(box, rect); } else box.BringIntoView();
         if (previousFocus is not null) Keyboard.Focus(previousFocus);
