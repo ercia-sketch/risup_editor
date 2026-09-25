@@ -2,7 +2,13 @@
 
 > 코딩 지식이 없는 자가 AI을 사용해 만들었습니다. 안정성, 호환성 및 데이터 보존이 보증되지 않습니다. 자유롭게 사용·수정·재배포할 수 있습니다.
 
-Windows x64용 로컬 RisuAI 프리셋 편집기입니다. 배포 실행 파일은 `artifacts/release/RisupEditor.exe` 하나입니다. 설치나 별도 .NET 설치 없이 실행하도록 런타임을 포함합니다. 최초 실행 시 .NET이 일부 네이티브 구성 요소를 임시 폴더에 해제할 수 있습니다.
+## 다운로드
+
+[**Windows x64 최신 버전 다운로드 (.zip)**](https://github.com/ercia-sketch/risup_editor/releases/latest/download/PromptEditor-SuperEasy-Windows-x64.zip)
+
+ZIP의 압축을 푼 뒤 `PromptEditor-SuperEasy.exe`를 실행하세요. GitHub가 자동으로 표시하는 `Source code` 압축 파일은 프로그램 배포판이 아니라 개발용 소스 코드입니다.
+
+Windows x64용 로컬 RisuAI 프리셋 편집기입니다. 설치나 별도 .NET 설치 없이 실행하도록 런타임을 포함합니다. 최초 실행 시 .NET이 일부 네이티브 구성 요소를 임시 폴더에 해제할 수 있습니다.
 
 ## 사용법
 
