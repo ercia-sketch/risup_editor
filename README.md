@@ -32,7 +32,7 @@ API 키와 프록시 주소에 해당하는 `openAIKey`, `proxyKey`, `forceRepla
 
 블록·토글·정규식·기타는 서로 독립적으로 작업되며 내보낼 때 하나의 프리셋으로 합쳐집니다. 모델·생성 설정까지 참조 프리셋과 맞추려면 **기타 정보 덮어쓰기 →**를 사용하세요. 빈 작업에서 내보낼 때는 현재 열린 참조 프리셋의 컨테이너 형식만 기준으로 사용하며, 참조 프리셋이 하나도 없으면 내보낼 수 없습니다.
 
-미리보기는 RisuAI의 중첩 CBS 인수와 조건 블록을 해석하며, 비교·논리·문자열·배열·수치 등 프리셋만으로 결과가 정해지는 함수를 계산합니다. description·persona·memory·authornote는 RisuAI와 같은 순서로 `innerFormat`의 CBS를 먼저 처리한 다음 첫 `{{slot}}`에 실제 내용의 자리를 넣습니다. 현재 캐릭터·로어북·대화·시간·난수·모듈 및 Lua `editRequest`처럼 실행 중인 RisuAI 상태가 필요한 값만 색이 있는 원문이나 자리 안내로 남깁니다. 자리 안내는 미리보기 전용이며 원문이나 내보내기 결과를 변경하지 않습니다. 정확한 구분은 `PREVIEW_COMPATIBILITY.md`에 공개되어 있습니다.
+미리보기는 RisuAI의 중첩 CBS 인수와 블록 파서를 따릅니다. 단일 `/` 종료 토큰의 이름을 강제하지 않으며, `#if`와 `#if_pure`의 공백·거짓 블록 처리, `#when` 전용 `:else`와 `keep`/`legacy`, pure-mode 중첩, `#each`, `#pure`/`#puredisplay`, `#escape`, `#code`, `#func`/`call`을 구분합니다. 비교·논리·문자열·배열·수치 등 프리셋만으로 결과가 정해지는 함수는 계산합니다. description·persona·memory·authornote는 RisuAI와 같은 순서로 `innerFormat`의 CBS를 먼저 처리한 다음 첫 `{{slot}}`에 실제 내용의 자리를 넣습니다. 현재 캐릭터·로어북·대화·시간·난수·모듈 및 Lua `editRequest`처럼 실행 중인 RisuAI 상태가 필요한 값만 색이 있는 원문이나 자리 안내로 남깁니다. 자리 안내는 미리보기 전용이며 원문이나 내보내기 결과를 변경하지 않습니다. 정확한 구분과 기준 버전은 `PREVIEW_COMPATIBILITY.md`에 공개되어 있습니다.
 
 - Ctrl+O: 불러오기
 - Ctrl+S: 프로젝트 저장

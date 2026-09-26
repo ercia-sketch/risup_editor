@@ -116,8 +116,13 @@ internal static class RisuStaticCbs
 
     internal static bool TryParseArrayValues(string source, out List<string> values)
     {
-        try { values = ParseArrayStrings(source); return true; }
-        catch { values = []; return false; }
+        try
+        {
+            if (JsonNode.Parse(source) is JsonArray array) values = array.Select(NodeText).ToList();
+            else values = source.Split('§').ToList();
+        }
+        catch { values = source.Split('§').ToList(); }
+        return true;
     }
 
     static double JsNumber(string value)

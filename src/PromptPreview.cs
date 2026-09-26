@@ -218,6 +218,8 @@ internal static class PromptPreviewEngine
 internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> toggles, bool jailbreak, HashSet<string> warnings)
 {
     sealed record InlineResult(string Text, bool Unknown);
+    readonly Dictionary<string, (string Data, string[] Args)> functions = new(StringComparer.Ordinal);
+    int callDepth;
     static readonly HashSet<string> RuntimeFunctions = new(StringComparer.OrdinalIgnoreCase)
     {
         "addvar", "asset", "assetlist", "audio", "authornote", "axmodel", "bg", "bgm", "bkspc", "button", "calc", "char",
@@ -235,11 +237,17 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
 
     public string Evaluate(string text)
     {
-        int position = 0; string result = ParseSequence(text, ref position, out _);
+        functions.Clear(); callDepth = 0;
+        return EvaluateNested(text);
+    }
+
+    string EvaluateNested(string text)
+    {
+        int position = 0; string result = ParseSequence(text, ref position, false, out _);
         return result;
     }
 
-    string ParseSequence(string source, ref int position, out string? stop)
+    string ParseSequence(string source, ref int position, bool stopOnClose, out string? stop)
     {
         var output = new StringBuilder(); stop = null;
         while (position < source.Length)
@@ -248,33 +256,42 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
             if (open < 0) { output.Append(source.AsSpan(position)); position = source.Length; break; }
             output.Append(source.AsSpan(position, open - position));
             if (!ReadToken(source, open, out string token, out int after)) { output.Append(source.AsSpan(open)); position = source.Length; break; }
-            position = after; string trimmed = token.Trim();
-            if (trimmed == ":else" || (trimmed.StartsWith('/') && !trimmed.StartsWith("//"))) { stop = trimmed; return output.ToString(); }
-
-            if (trimmed is "#pure" or "#puredisplay" or "#pure_display" || trimmed.StartsWith("#escape", StringComparison.Ordinal))
+            position = after; string syntax = token;
+            if (syntax.StartsWith('/') && !syntax.StartsWith("//"))
             {
-                string close = trimmed.StartsWith("#escape", StringComparison.Ordinal) ? "escape" : trimmed is "#pure" ? "pure" : trimmed[1..].Replace("_", "", StringComparison.Ordinal);
-                if (!TryReadRawBlock(source, ref position, close, out string body))
-                {
-                    warnings.Add($"닫히지 않은 CBS '{{{{{trimmed}}}}}' 블록은 원문으로 보존했습니다."); output.Append(PromptPreviewEngine.Marker(source[open..position], 'w')); continue;
-                }
-                bool keep = trimmed.Contains("::keep", StringComparison.Ordinal); output.Append(keep ? body : body.Trim()); continue;
+                if (stopOnClose) { stop = syntax; return output.ToString(); }
+                output.Append("{{").Append(token).Append("}}"); continue;
             }
+            if (syntax == ":else") { output.Append("{{").Append(token).Append("}}"); continue; }
 
-            if (trimmed.StartsWith("#each", StringComparison.Ordinal))
+            if (syntax is "#pure" or "#puredisplay" or "#pure_display" || syntax.StartsWith("#escape", StringComparison.Ordinal))
             {
                 int originalStart = open;
-                if (!TryReadRawBlock(source, ref position, "each", out string body))
+                if (!TryReadRawBlock(source, ref position, out string body))
+                {
+                    warnings.Add($"닫히지 않은 CBS '{{{{{syntax}}}}}' 블록은 원문으로 보존했습니다."); output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); continue;
+                }
+                if (syntax is "#puredisplay" or "#pure_display") output.Append(body.Trim().Replace("{{", "\\{\\{", StringComparison.Ordinal).Replace("}}", "\\}\\}", StringComparison.Ordinal));
+                else
+                {
+                    bool keep = syntax.StartsWith("#escape", StringComparison.Ordinal) && syntax[7..].Trim() == "::keep";
+                    output.Append(keep ? body : body.Trim());
+                }
+                continue;
+            }
+
+            if (syntax.StartsWith("#each", StringComparison.Ordinal))
+            {
+                int originalStart = open;
+                if (!TryReadRawBlock(source, ref position, out string body))
                 {
                     warnings.Add("닫히지 않은 CBS #each 블록은 원문으로 보존했습니다."); output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); continue;
                 }
-                string header = trimmed[5..].Trim(); bool keep = false;
+                string header = syntax[5..].Trim(); bool keep = false;
                 if (header.StartsWith("::keep ", StringComparison.Ordinal)) { keep = true; header = header[7..].Trim(); }
+                if (header.StartsWith("as ", StringComparison.Ordinal)) header = header[3..].Trim();
                 int asIndex = header.LastIndexOf(" as ", StringComparison.Ordinal); if (asIndex < 0) asIndex = header.LastIndexOf(' ');
-                if (asIndex <= 0)
-                {
-                    output.Append(PreserveSource(source[originalStart..position], "CBS #each의 배열과 슬롯 이름을 해석하지 못했습니다.").Text); continue;
-                }
+                if (asIndex <= 0) continue;
                 string arraySource = header[..asIndex], slot = header[(asIndex + (header.AsSpan(asIndex).StartsWith(" as ") ? 4 : 1))..].Trim();
                 var resolvedArray = ResolveInlineText(arraySource);
                 if (resolvedArray.Unknown || !RisuStaticCbs.TryParseArrayValues(resolvedArray.Text, out var values))
@@ -283,45 +300,76 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
                 }
                 string template = keep ? body : TrimLines(body);
                 string expanded = string.Concat(values.Select(value => template.Replace($"{{{{slot::{slot}}}}}", value, StringComparison.Ordinal)));
-                output.Append(keep ? Evaluate(expanded) : Evaluate(expanded).Trim()); continue;
+                output.Append(EvaluateNested(keep ? expanded : expanded.Trim())); continue;
             }
 
-            if (trimmed.StartsWith("#if_pure ", StringComparison.Ordinal))
+            if (syntax.StartsWith("#if", StringComparison.Ordinal))
             {
                 int originalStart = open;
-                if (!TryReadRawBlock(source, ref position, "if_pure", out string body))
+                var resolved = ResolveInlineText(syntax);
+                if (resolved.Unknown)
                 {
-                    warnings.Add("닫히지 않은 CBS #if_pure 블록은 원문으로 보존했습니다."); output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); continue;
+                    if (!TryReadBlockForPreservation(source, ref position, out _)) warnings.Add("닫히지 않은 CBS 조건 블록은 원문으로 보존했습니다.");
+                    output.Append(PreserveSource(source[originalStart..position], $"런타임 값이 필요한 조건 '{{{{{syntax}}}}}'은 평가하지 않고 원문으로 보존했습니다.").Text); continue;
                 }
-                var resolved = ResolveInlineText(trimmed); bool? condition = EvaluateCondition(resolved.Text, resolved.Unknown, out _);
-                if (condition is null) { output.Append(PreserveSource(source[originalStart..position], "CBS #if_pure 조건은 현재 프리셋만으로 계산할 수 없습니다.").Text); continue; }
-                int elseIndex = body.IndexOf("{{:else}}", StringComparison.Ordinal);
-                output.Append(condition.Value ? (elseIndex < 0 ? body : body[..elseIndex]) : (elseIndex < 0 ? "" : body[(elseIndex + 9)..])); continue;
+                bool condition = IfTruthy(resolved.Text), keepWhitespace = resolved.Text.StartsWith("#if_pure", StringComparison.Ordinal);
+                if (!condition)
+                {
+                    if (!TryReadRawBlock(source, ref position, out _)) { warnings.Add("닫히지 않은 CBS 조건 블록은 원문으로 보존했습니다."); output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); }
+                    continue;
+                }
+                string body = ParseSequence(source, ref position, true, out string? marker);
+                if (marker is null)
+                {
+                    warnings.Add("닫히지 않은 CBS 조건 블록은 원문으로 보존했습니다."); output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); continue;
+                }
+                output.Append(keepWhitespace ? body : TrimLines(body)); continue;
             }
 
-            if (IsConditional(trimmed))
+            if (syntax.StartsWith("#when", StringComparison.Ordinal))
             {
                 int originalStart = open;
-                var resolved = ResolveInlineText(trimmed);
+                var resolved = ResolveInlineText(syntax);
                 bool? condition = EvaluateCondition(resolved.Text, resolved.Unknown, out string mode);
-                string truth = ParseSequence(source, ref position, out string? marker), falsy = "";
-                if (marker == ":else") falsy = ParseSequence(source, ref position, out marker);
-                if (marker is null || !marker.StartsWith('/'))
-                {
-                    warnings.Add("닫히지 않은 CBS 조건 블록은 원문으로 보존했습니다.");
-                    output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); continue;
-                }
                 if (condition is null)
                 {
-                    warnings.Add($"런타임 값이 필요한 조건 '{{{{{trimmed}}}}}'은 평가하지 않고 원문으로 보존했습니다.");
-                    output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); continue;
+                    if (!TryReadBlockForPreservation(source, ref position, out _)) warnings.Add("닫히지 않은 CBS 조건 블록은 원문으로 보존했습니다.");
+                    output.Append(PreserveSource(source[originalStart..position], $"런타임 값이 필요한 조건 '{{{{{syntax}}}}}'은 평가하지 않고 원문으로 보존했습니다.").Text); continue;
                 }
-                string selected = condition.Value ? truth : falsy;
-                output.Append(FormatConditional(selected, trimmed, mode));
+                if (mode == "legacy" && !condition.Value)
+                {
+                    if (!TryReadRawBlock(source, ref position, out _)) { warnings.Add("닫히지 않은 CBS 조건 블록은 원문으로 보존했습니다."); output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); }
+                    continue;
+                }
+                string body = ParseSequence(source, ref position, true, out string? marker);
+                if (marker is null)
+                {
+                    warnings.Add("닫히지 않은 CBS 조건 블록은 원문으로 보존했습니다."); output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); continue;
+                }
+                output.Append(mode == "legacy" ? TrimLines(body) : SelectWhenBody(body, condition.Value, mode == "keep"));
                 continue;
             }
 
-            var inline = ResolveInlineToken(trimmed);
+            if (syntax == "#code")
+            {
+                int originalStart = open;
+                string body = ParseSequence(source, ref position, true, out string? marker);
+                if (marker is null) { warnings.Add("닫히지 않은 CBS #code 블록은 원문으로 보존했습니다."); output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); continue; }
+                output.Append(NormalizeCode(body)); continue;
+            }
+
+            if (syntax.StartsWith("#func", StringComparison.Ordinal))
+            {
+                string[] parts = syntax.Split(' ', StringSplitOptions.None);
+                if (parts.Length > 1)
+                {
+                    int originalStart = open;
+                    if (!TryReadRawBlock(source, ref position, out string body)) { warnings.Add("닫히지 않은 CBS #func 블록은 원문으로 보존했습니다."); output.Append(PromptPreviewEngine.Marker(source[originalStart..position], 'w')); continue; }
+                    functions[parts[1]] = (body.Trim(), parts[1..]); continue;
+                }
+            }
+
+            var inline = ResolveInlineToken(syntax);
             output.Append(inline.Text);
         }
         return output.ToString();
@@ -343,15 +391,14 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
         token = ""; after = source.Length; return false;
     }
 
-    static bool TryReadRawBlock(string source, ref int position, string closeName, out string body)
+    static bool TryReadRawBlock(string source, ref int position, out string body)
     {
         int contentStart = position, scan = position, depth = 1;
         while (scan < source.Length)
         {
             int open = source.IndexOf("{{", scan, StringComparison.Ordinal); if (open < 0 || !ReadToken(source, open, out string token, out int after)) break;
-            string trimmed = token.Trim(), normalized = trimmed.Replace("_", "", StringComparison.Ordinal);
-            if (normalized.StartsWith("#" + closeName.Replace("_", "", StringComparison.Ordinal), StringComparison.Ordinal)) depth++;
-            else if (normalized.StartsWith("/" + closeName.Replace("_", "", StringComparison.Ordinal), StringComparison.Ordinal) && --depth == 0)
+            if ((token.StartsWith('#') || token.StartsWith(':')) && token != ":else") depth++;
+            else if (token.StartsWith('/') && !token.StartsWith("//") && --depth == 0)
             {
                 body = source[contentStart..open]; position = after; return true;
             }
@@ -360,7 +407,36 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
         body = source[contentStart..]; position = source.Length; return false;
     }
 
-    static bool IsConditional(string token) => token.StartsWith("#if ") || token.StartsWith("#if_pure ") || token.StartsWith("#when");
+    static bool TryReadBlockForPreservation(string source, ref int position, out string body)
+    {
+        int contentStart = position, scan = position;
+        var rawFrames = new Stack<bool>(); rawFrames.Push(false);
+        while (scan < source.Length)
+        {
+            int open = source.IndexOf("{{", scan, StringComparison.Ordinal); if (open < 0 || !ReadToken(source, open, out string token, out int after)) break;
+            if (token.StartsWith('/') && !token.StartsWith("//"))
+            {
+                rawFrames.Pop();
+                if (rawFrames.Count == 0) { body = source[contentStart..open]; position = after; return true; }
+            }
+            else if (rawFrames.Contains(true))
+            {
+                if ((token.StartsWith('#') || token.StartsWith(':')) && token != ":else") rawFrames.Push(true);
+            }
+            else if (TryClassifyBlockStart(token, out bool raw)) rawFrames.Push(raw);
+            scan = after;
+        }
+        body = source[contentStart..]; position = source.Length; return false;
+    }
+
+    static bool TryClassifyBlockStart(string token, out bool raw)
+    {
+        raw = false;
+        if (token.StartsWith("#if", StringComparison.Ordinal) || token.StartsWith("#when", StringComparison.Ordinal) || token == "#code") return true;
+        if (token is "#pure" or "#puredisplay" or "#pure_display" || token.StartsWith("#escape", StringComparison.Ordinal) || token.StartsWith("#each", StringComparison.Ordinal)) { raw = true; return true; }
+        if (token.StartsWith("#func", StringComparison.Ordinal) && token.Split(' ', StringSplitOptions.None).Length > 1) { raw = true; return true; }
+        return false;
+    }
 
     InlineResult ResolveInlineText(string text)
     {
@@ -378,8 +454,27 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
 
     InlineResult ResolveInlineToken(string token)
     {
+        if (token.StartsWith("call::", StringComparison.Ordinal))
+        {
+            string[] callArgs = token.Split("::", StringSplitOptions.None)[1..];
+            if (callArgs.Length > 0 && functions.TryGetValue(callArgs[0], out var function))
+            {
+                if (++callDepth > 20) { callDepth--; return new("ERROR: Call stack limit reached", false); }
+                try
+                {
+                    string data = function.Data;
+                    for (int i = 0; i < callArgs.Length; i++) data = data.Replace($"{{{{arg::{i}}}}}", callArgs[i], StringComparison.Ordinal);
+                    return new(EvaluateNested(data), false);
+                }
+                finally { callDepth--; }
+            }
+        }
         if (token.StartsWith("? ", StringComparison.Ordinal))
-            return RisuStaticCbs.TryCalculate(token[2..], out string calculation) ? new(calculation, false) : Preserve(token, "수식 CBS를 계산하지 못했습니다.");
+        {
+            var expression = ResolveInlineText(token[2..]);
+            if (expression.Unknown) return Preserve(token, "수식 CBS의 인수에 현재 프리셋만으로 정할 수 없는 값이 있습니다.");
+            return RisuStaticCbs.TryCalculate(expression.Text, out string calculation) ? new(calculation, false) : Preserve(token, "수식 CBS를 계산하지 못했습니다.");
+        }
         var pieces = SplitToken(token);
         string name = RisuStaticCbs.Normalize(pieces[0]);
         if (name == "getglobalvar")
@@ -454,10 +549,8 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
     bool? EvaluateCondition(string token, bool unknown, out string mode)
     {
         mode = "normal"; if (unknown) return null;
-        if (token.StartsWith("#if_pure ")) return Truthy(token[9..]);
-        if (token.StartsWith("#if ")) return Truthy(token[4..]);
-        if (token.StartsWith("#when ")) return Truthy(token[6..]);
-        if (!token.StartsWith("#when::")) return null;
+        if (token.StartsWith("#when ")) return Truthy(StateAfterFirstSpace(token));
+        if (!token.StartsWith("#when::")) return false;
         var statement = token.Split("::").Skip(1).ToList();
         if (statement.Count == 1) return Truthy(statement[0]);
         while (statement.Count > 1)
@@ -475,10 +568,10 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
                 case "toggle": statement.Add(Truthy(Toggle(condition)) ? "1" : "0"); break;
                 case "tis": statement.Add(Toggle(Pop(statement)) == condition ? "1" : "0"); break;
                 case "tisnot": statement.Add(Toggle(Pop(statement)) != condition ? "1" : "0"); break;
-                case ">": statement.Add(Number(Pop(statement)) > Number(condition) ? "1" : "0"); break;
-                case "<": statement.Add(Number(Pop(statement)) < Number(condition) ? "1" : "0"); break;
-                case ">=": statement.Add(Number(Pop(statement)) >= Number(condition) ? "1" : "0"); break;
-                case "<=": statement.Add(Number(Pop(statement)) <= Number(condition) ? "1" : "0"); break;
+                case ">": statement.Add(JsParseFloat(Pop(statement)) > JsParseFloat(condition) ? "1" : "0"); break;
+                case "<": statement.Add(JsParseFloat(Pop(statement)) < JsParseFloat(condition) ? "1" : "0"); break;
+                case ">=": statement.Add(JsParseFloat(Pop(statement)) >= JsParseFloat(condition) ? "1" : "0"); break;
+                case "<=": statement.Add(JsParseFloat(Pop(statement)) <= JsParseFloat(condition) ? "1" : "0"); break;
                 case "var": case "vis": case "visnot": return null;
                 default: statement.Add(Truthy(condition) ? "1" : "0"); break;
             }
@@ -489,17 +582,54 @@ internal sealed class ToggleCbsEvaluator(IReadOnlyDictionary<string, string> tog
     string Toggle(string key) => toggles.TryGetValue(key, out string? value) ? value : "null";
     static string Pop(List<string> values) { if (values.Count == 0) return ""; string value = values[^1]; values.RemoveAt(values.Count - 1); return value; }
     static bool Truthy(string value) => value is "1" or "true";
-    static double Number(string value) => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double number) ? number : double.NaN;
-
-    static string FormatConditional(string selected, string token, string mode)
+    static string StateAfterFirstSpace(string token)
     {
-        if (token.StartsWith("#if_pure ")) return selected;
-        if (token.StartsWith("#if ") || mode == "legacy") return TrimLines(selected);
-        if (mode == "keep" || !selected.Contains('\n')) return selected;
-        var lines = selected.Split('\n').ToList();
-        while (lines.Count > 0 && string.IsNullOrWhiteSpace(lines[0])) lines.RemoveAt(0);
-        while (lines.Count > 0 && string.IsNullOrWhiteSpace(lines[^1])) lines.RemoveAt(lines.Count - 1);
+        int first = token.IndexOf(' '); if (first < 0) return "";
+        int second = token.IndexOf(' ', first + 1); return second < 0 ? token[(first + 1)..] : token[(first + 1)..second];
+    }
+    static bool IfTruthy(string token) => Truthy(StateAfterFirstSpace(token));
+    static double JsParseFloat(string value)
+    {
+        Match match = Regex.Match(value, @"^\s*[+-]?(?:Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)", RegexOptions.CultureInvariant);
+        if (!match.Success) return double.NaN;
+        string parsed = match.Value.Trim();
+        if (parsed is "Infinity" or "+Infinity") return double.PositiveInfinity;
+        if (parsed == "-Infinity") return double.NegativeInfinity;
+        return double.TryParse(parsed, NumberStyles.Float, CultureInfo.InvariantCulture, out double number) ? number : double.NaN;
+    }
+
+    static string SelectWhenBody(string body, bool condition, bool keep)
+    {
+        var lines = body.Split('\n').ToList();
+        if (lines.Count == 1)
+        {
+            int elseIndex = body.IndexOf("{{:else}}", StringComparison.Ordinal);
+            if (elseIndex >= 0) return condition ? body[..elseIndex] : body[(elseIndex + 9)..];
+            return condition ? body : "";
+        }
+        int elseLine = lines.FindIndex(line => line.Trim() == "{{:else}}");
+        if (elseLine >= 0)
+        {
+            if (condition) lines.RemoveRange(elseLine, lines.Count - elseLine);
+            else lines.RemoveRange(0, elseLine + 1);
+        }
+        else if (!condition) return "";
+        if (!keep)
+        {
+            while (lines.Count > 0 && string.IsNullOrWhiteSpace(lines[0])) lines.RemoveAt(0);
+            while (lines.Count > 0 && string.IsNullOrWhiteSpace(lines[^1])) lines.RemoveAt(lines.Count - 1);
+        }
         return string.Join('\n', lines);
+    }
+
+    static string NormalizeCode(string body)
+    {
+        string value = body.Trim().Replace("\n", "", StringComparison.Ordinal).Replace("\t", "", StringComparison.Ordinal);
+        value = Regex.Replace(value, @"\\u([0-9A-Fa-f]{4})", match => ((char)Convert.ToInt32(match.Groups[1].Value, 16)).ToString());
+        return Regex.Replace(value, @"\\(.)", match => match.Groups[1].Value switch
+        {
+            "n" => "\n", "r" => "\r", "t" => "\t", "b" => "\b", "f" => "\f", "v" => "\v", "a" => "a", "x" => "\0", _ => match.Groups[1].Value
+        });
     }
 
     static string TrimLines(string value) => string.Join('\n', value.Trim().Split('\n').Select(line => line.TrimStart()));
