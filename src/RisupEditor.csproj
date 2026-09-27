@@ -3,7 +3,8 @@
     <OutputType>WinExe</OutputType><TargetFramework>net8.0-windows</TargetFramework><UseWPF>true</UseWPF>
     <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><AssemblyName>RisupEditor</AssemblyName>
     <AssemblyTitle>★프롬프트 에디터─슈퍼 이지★</AssemblyTitle><Product>★프롬프트 에디터─슈퍼 이지★</Product>
-    <Version>1.0.1</Version><NuGetAudit>false</NuGetAudit><RuntimeIdentifier>win-x64</RuntimeIdentifier><SelfContained>true</SelfContained>
+    <Version>1.1.0</Version><FileVersion>1.1.0.0</FileVersion><AssemblyVersion>1.1.0.0</AssemblyVersion><InformationalVersion>1.1.0</InformationalVersion><IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <NuGetAudit>false</NuGetAudit><RuntimeIdentifier>win-x64</RuntimeIdentifier><SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile><EnableCompressionInSingleFile>true</EnableCompressionInSingleFile><IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>none</DebugType><ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>

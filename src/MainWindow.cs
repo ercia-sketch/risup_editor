@@ -15,6 +15,8 @@ public sealed partial class MainWindow : Window
     readonly List<Preset> references = new();
     readonly List<HashSet<Value>> collapsedReferences = new();
     readonly List<HashSet<string>> collapsedReferenceSections = new();
+    readonly List<Dictionary<string, string>> referenceToggleValues = new();
+    readonly Dictionary<TabItem, ReferenceTabView> referenceViews = new();
     readonly List<Value> blocks = new();
     readonly List<Value> regexScripts = new();
     readonly HashSet<Value> collapsedWork = new();
@@ -33,18 +35,20 @@ public sealed partial class MainWindow : Window
     readonly ScrollViewer workScroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
     readonly TextBox toggleEditor;
     readonly TextBlock status = new(), workHint = new(), toggleErrors = new();
-    readonly Button copyTab, copyBlock, undoButton, redoButton, previewButton, importToggles, importRegex;
-    readonly CheckBox withJoinToggle;
+    readonly Button copyTab, copyBlock, undoButton, redoButton, previewButton, referencePreviewButton, importToggles, importRegex, referenceToggleSourceButton, workToggleSourceButton;
+    readonly CheckBox withJoinToggle, referenceWithJoinToggle;
     readonly ColumnDefinition leftColumn, workColumn, toggleColumn;
     Preset? basis;
     string customToggleText = "", projectPath = "";
     int referenceIndex = -1, selected = -1;
-    bool dirty, showingPreview, previewWithJoin, settingToggleEditor, toggleEditCaptured;
+    bool dirty, showingPreview, previewWithJoin, showingReferencePreview, referencePreviewWithJoin, settingToggleEditor, toggleEditCaptured;
+    TogglePreviewSource togglePreviewSource = TogglePreviewSource.Work;
 
     record Snapshot(List<Value> Blocks, List<Value> Regex, Preset? Basis, Value DraftOther, string ToggleText, Dictionary<string, string> ToggleValues, HashSet<string> CustomOtherFields, HashSet<int> Collapsed, int Selected);
     record ToggleDef(string Key, string Name, string? Type, string[] Options, int Line);
     record ToggleNode(ToggleDef Def, List<ToggleDef>? Children);
     record ChoiceItem(string Value, string Label);
+    enum TogglePreviewSource { Reference, Work }
 
     static Brush Ink => new SolidColorBrush(Color.FromRgb(36, 51, 69));
     static Brush Muted => new SolidColorBrush(Color.FromRgb(105, 121, 140));
@@ -60,10 +64,12 @@ public sealed partial class MainWindow : Window
     }
     static Border Card(UIElement child) => new() { Child = child, Background = Brushes.White, BorderBrush = Line, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(14), Margin = new Thickness(0, 0, 8, 12) };
     Preset? Current => tabs.SelectedIndex >= 0 && tabs.SelectedIndex < references.Count ? references[tabs.SelectedIndex] : null;
+    ReferenceTabView? CurrentReferenceView => tabs.SelectedItem is TabItem tab && referenceViews.TryGetValue(tab, out var view) ? view : null;
+    Dictionary<string, string>? CurrentReferenceToggleValues => tabs.SelectedIndex >= 0 && tabs.SelectedIndex < referenceToggleValues.Count ? referenceToggleValues[tabs.SelectedIndex] : null;
 
     public MainWindow()
     {
-        Title = AppInfo.Name; Background = new SolidColorBrush(Color.FromRgb(243, 245, 247)); FontFamily = new FontFamily("Segoe UI, Malgun Gothic");
+        Title = $"{AppInfo.Name} {AppInfo.Version}"; Background = new SolidColorBrush(Color.FromRgb(243, 245, 247)); FontFamily = new FontFamily("Segoe UI, Malgun Gothic");
         Width = 1540; Height = 900; MinWidth = 900; MinHeight = 560; WindowStartupLocation = WindowStartupLocation.CenterScreen;
         var root = new DockPanel { Background = Background }; Content = root;
         var bottom = new Border { Padding = new Thickness(24, 10, 24, 10), Background = Brushes.White, BorderBrush = Line, BorderThickness = new Thickness(0, 1, 0, 0), Child = CreateFooter() };
@@ -79,7 +85,16 @@ public sealed partial class MainWindow : Window
 
         var left = new DockPanel(); Grid.SetColumn(left, 0); columns.Children.Add(left);
         var leftHeader = new StackPanel(); DockPanel.SetDock(leftHeader, Dock.Top); left.Children.Add(leftHeader);
-        leftHeader.Children.Add(Text("참조 프리셋", 20)); leftHeader.Children.Add(Text("읽기 전용 · 여러 파일을 탭으로 열어 비교할 수 있습니다.", 12, Muted));
+        var referenceTitleRow = new Grid(); referenceTitleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); referenceTitleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        referenceTitleRow.Children.Add(Text("참조 프리셋", 20));
+        var referencePreviewControls = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), ToolTip = "연속된 같은 역할의 메시지를 합쳐 참조 프리셋을 미리봅니다." };
+        var referenceWithJoinLabel = Text("With Join", 11); referenceWithJoinLabel.VerticalAlignment = VerticalAlignment.Center; referencePreviewControls.Children.Add(referenceWithJoinLabel);
+        referenceWithJoinToggle = new CheckBox { Width = 18, Height = 18, Margin = new Thickness(6, 0, 5, 0), VerticalAlignment = VerticalAlignment.Center, HorizontalContentAlignment = HorizontalAlignment.Center, ToolTip = "연속된 같은 역할의 메시지를 합칩니다." };
+        referenceWithJoinToggle.Click += (_, _) => { referencePreviewWithJoin = referenceWithJoinToggle.IsChecked == true; dirty = true; RefreshReferencePromptPreview(); Update(); };
+        referencePreviewControls.Children.Add(referenceWithJoinToggle);
+        referencePreviewButton = Button("미리보기", ToggleReferencePromptPreview, compact: true); referencePreviewButton.MinHeight = 25; referencePreviewButton.Padding = new Thickness(4, 3, 4, 3); referencePreviewButton.BorderThickness = new Thickness(2); referencePreviewButton.BorderBrush = Line; referencePreviewControls.Children.Add(referencePreviewButton);
+        Grid.SetColumn(referencePreviewControls, 1); referenceTitleRow.Children.Add(referencePreviewControls); leftHeader.Children.Add(referenceTitleRow);
+        leftHeader.Children.Add(Text("읽기 전용 · 여러 파일을 탭으로 열어 비교할 수 있습니다.", 12, Muted));
         var referenceTools = new WrapPanel { Margin = new Thickness(0, 9, 0, 7) };
         referenceTools.Children.Add(Button("불러오기", OpenDialog, compact: true));
         copyTab = Button("블록 전체 복사 →", () => Copy(true), compact: true); copyBlock = Button("블록 복사 →", () => Copy(false), compact: true);
@@ -90,27 +105,30 @@ public sealed partial class MainWindow : Window
         tabs.SizeChanged += (_, _) => ResizeTabs();
         tabs.PreviewMouseDown += (_, _) => ActivateSearchPane(0);
         tabs.GotKeyboardFocus += (_, _) => ActivateSearchPane(0);
-        tabs.SelectionChanged += (_, e) => { if (e.Source == tabs) { if (tabs.SelectedItem is TabItem selectedTab && selectedTab.Tag is Action build) build(); if (basis is null && Current is not null) { workSections = null; RenderWork(); } referenceIndex = -1; ClearReferenceSelection(); Update(); } };
+        tabs.SelectionChanged += (_, e) => { if (e.Source == tabs) { if (tabs.SelectedItem is TabItem selectedTab && selectedTab.Tag is Action build) build(); if (basis is null && Current is not null) { workSections = null; RenderWork(); } referenceIndex = -1; ClearReferenceSelection(); ApplyReferencePreviewVisibility(); RefreshReferencePromptPreview(); if (togglePreviewSource == TogglePreviewSource.Reference) RenderTogglePreview(); Update(); } };
         left.Children.Add(tabs);
 
         var split1 = Splitter(); Grid.SetColumn(split1, 1); columns.Children.Add(split1);
         var middle = new DockPanel(); Grid.SetColumn(middle, 2); columns.Children.Add(middle);
         var middleHeader = new StackPanel { MinHeight = 150 }; DockPanel.SetDock(middleHeader, Dock.Top); middle.Children.Add(middleHeader);
-        middleHeader.Children.Add(Text("작업 중", 20)); workHint.Foreground = Muted; workHint.FontSize = 12; middleHeader.Children.Add(workHint);
-        var row1 = new WrapPanel { Margin = new Thickness(0, 7, 0, 0) };
-        undoButton = Button("↶ 실행 취소", Undo, compact: true); redoButton = Button("↷ 다시 실행", Redo, compact: true);
-        row1.Children.Add(undoButton); row1.Children.Add(redoButton); middleHeader.Children.Add(row1);
-        var row2 = new Grid(); row2.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); row2.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var workCommands = new WrapPanel();
-        workCommands.Children.Add(Button("현재 작업 삭제", NewWork, compact: true)); workCommands.Children.Add(Button("프로젝트 불러오기", LoadProjectDialog, compact: true));
-        workCommands.Children.Add(Button("저장", SaveProject, compact: true)); workCommands.Children.Add(Button("내보내기", Export, true, true)); row2.Children.Add(workCommands);
+        var workTitleRow = new Grid(); workTitleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); workTitleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        workTitleRow.Children.Add(Text("작업 중", 20));
         var previewControls = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), ToolTip = "연속된 같은 역할의 메시지를 합쳐 미리봅니다." };
         var withJoinLabel = Text("With Join", 11); withJoinLabel.VerticalAlignment = VerticalAlignment.Center; previewControls.Children.Add(withJoinLabel);
         withJoinToggle = new CheckBox { Width = 18, Height = 18, Margin = new Thickness(6, 0, 5, 0), VerticalAlignment = VerticalAlignment.Center, HorizontalContentAlignment = HorizontalAlignment.Center, ToolTip = "연속된 같은 역할의 메시지를 합칩니다." };
         withJoinToggle.Click += (_, _) => { previewWithJoin = withJoinToggle.IsChecked == true; dirty = true; RefreshPromptPreview(); Update(); };
         previewControls.Children.Add(withJoinToggle);
-        previewButton = Button("미리보기", TogglePromptPreview, compact: true); previewButton.BorderThickness = new Thickness(2); previewButton.BorderBrush = Line; previewControls.Children.Add(previewButton);
-        Grid.SetColumn(previewControls, 1); row2.Children.Add(previewControls); middleHeader.Children.Add(row2);
+        previewButton = Button("미리보기", TogglePromptPreview, compact: true); previewButton.MinHeight = 25; previewButton.Padding = new Thickness(4, 3, 4, 3); previewButton.BorderThickness = new Thickness(2); previewButton.BorderBrush = Line; previewControls.Children.Add(previewButton);
+        Grid.SetColumn(previewControls, 1); workTitleRow.Children.Add(previewControls); middleHeader.Children.Add(workTitleRow);
+        workHint.Foreground = Muted; workHint.FontSize = 12; middleHeader.Children.Add(workHint);
+        var row1 = new WrapPanel { Margin = new Thickness(0, 7, 0, 0) };
+        undoButton = Button("↶ 실행 취소", Undo, compact: true); redoButton = Button("↷ 다시 실행", Redo, compact: true);
+        row1.Children.Add(undoButton); row1.Children.Add(redoButton); middleHeader.Children.Add(row1);
+        var row2 = new Grid();
+        var workCommands = new WrapPanel();
+        workCommands.Children.Add(Button("현재 작업 삭제", NewWork, compact: true)); workCommands.Children.Add(Button("프로젝트 불러오기", LoadProjectDialog, compact: true));
+        workCommands.Children.Add(Button("저장", SaveProject, compact: true)); workCommands.Children.Add(Button("내보내기", Export, true, true)); row2.Children.Add(workCommands);
+        middleHeader.Children.Add(row2);
         promptPreview.PreviewMouseDown += (_, _) => SetSearchScope(1, SearchSection.Preview);
         promptPreview.GotKeyboardFocus += (_, _) => SetSearchScope(1, SearchSection.Preview);
         workScroll.Content = work; middle.Children.Add(workScroll);
@@ -118,7 +136,11 @@ public sealed partial class MainWindow : Window
         var split2 = Splitter(); Grid.SetColumn(split2, 3); columns.Children.Add(split2);
         var toggles = new DockPanel(); Grid.SetColumn(toggles, 4); columns.Children.Add(toggles);
         var toggleHeader = new StackPanel(); DockPanel.SetDock(toggleHeader, Dock.Top); toggles.Children.Add(toggleHeader);
-        toggleHeader.Children.Add(Text("채팅 화면 토글", 20));
+        var toggleSourceRow = new WrapPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 0, 5) };
+        var toggleTitle = Text("채팅 화면 토글", 20); toggleTitle.Margin = new Thickness(0, 0, 6, 0); toggleSourceRow.Children.Add(toggleTitle);
+        referenceToggleSourceButton = Button("참조 프리셋", () => SetTogglePreviewSource(TogglePreviewSource.Reference), compact: true); referenceToggleSourceButton.BorderThickness = new Thickness(2); toggleSourceRow.Children.Add(referenceToggleSourceButton);
+        workToggleSourceButton = Button("작업 중", () => SetTogglePreviewSource(TogglePreviewSource.Work), compact: true); workToggleSourceButton.BorderThickness = new Thickness(2); toggleSourceRow.Children.Add(workToggleSourceButton);
+        toggleHeader.Children.Add(toggleSourceRow);
         var toggleGrid = new Grid(); toggleGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 130 }); toggleGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(10) }); toggleGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 130 }); toggles.Children.Add(toggleGrid);
         var editorPanel = new DockPanel(); Grid.SetRow(editorPanel, 0); toggleGrid.Children.Add(editorPanel);
         var editorLabel = Text("토글 정의", 12, Muted); editorLabel.Margin = new Thickness(0, 0, 0, 5); DockPanel.SetDock(editorLabel, Dock.Top); editorPanel.Children.Add(editorLabel);
@@ -155,9 +177,13 @@ public sealed partial class MainWindow : Window
     {
         if (!searchNavigating) SearchDataChanged(); UpdateSearchLabels();
         if (selected >= 0 && selected < blocks.Count && refreshHeaders.TryGetValue(blocks[selected], out var refresh)) refresh();
-        Title = $"{(dirty ? "● " : "")}{AppInfo.Name}"; workHint.Text = $"{blocks.Count}개 블록 · {(showingPreview ? "미리보기" : dirty ? "저장하지 않은 변경 사항이 있습니다" : "변경 사항 없음")}";
+        Title = $"{(dirty ? "● " : "")}{AppInfo.Name} {AppInfo.Version}"; workHint.Text = $"{blocks.Count}개 블록 · {(showingPreview ? "미리보기" : dirty ? "저장하지 않은 변경 사항이 있습니다" : "변경 사항 없음")}";
         copyTab.IsEnabled = Current?.Blocks is { Count: > 0 }; copyBlock.IsEnabled = Current?.Blocks is { } b && referenceIndex >= 0 && referenceIndex < b.Count; importToggles.IsEnabled = Current is not null; importRegex.IsEnabled = Current is not null;
         previewButton.BorderBrush = showingPreview ? Accent : Line;
+        referencePreviewButton.IsEnabled = Current is not null; referenceWithJoinToggle.IsEnabled = Current is not null; referencePreviewButton.BorderBrush = showingReferencePreview ? Accent : Line;
+        referenceToggleSourceButton.IsEnabled = Current is not null;
+        referenceToggleSourceButton.BorderBrush = togglePreviewSource == TogglePreviewSource.Reference ? Accent : Line; referenceToggleSourceButton.Background = togglePreviewSource == TogglePreviewSource.Reference ? new SolidColorBrush(Color.FromRgb(230, 247, 244)) : Brushes.White;
+        workToggleSourceButton.BorderBrush = togglePreviewSource == TogglePreviewSource.Work ? Accent : Line; workToggleSourceButton.Background = togglePreviewSource == TogglePreviewSource.Work ? new SolidColorBrush(Color.FromRgb(230, 247, 244)) : Brushes.White;
         undoButton.IsEnabled = undo.Count > 0; redoButton.IsEnabled = redo.Count > 0;
         if (message is not null) status.Text = message; else if (string.IsNullOrEmpty(status.Text)) status.Text = ".risup 파일을 불러와 시작하세요.  ·  Ctrl+O 불러오기  /  Ctrl+S 프로젝트 저장";
     }
@@ -186,21 +212,30 @@ public sealed partial class MainWindow : Window
     public void OpenPaths(IEnumerable<string> paths)
     {
         var errors = new List<string>(); int added = 0;
-        foreach (string path in paths) try { references.Add(RisupCodec.Load(path)); collapsedReferences.Add(new()); collapsedReferenceSections.Add(new()); added++; } catch (Exception ex) { errors.Add(Path.GetFileName(path) + ": " + ex.Message); }
+        foreach (string path in paths) try { references.Add(RisupCodec.Load(path)); collapsedReferences.Add(new()); collapsedReferenceSections.Add(new()); referenceToggleValues.Add(new()); added++; } catch (Exception ex) { errors.Add(Path.GetFileName(path) + ": " + ex.Message); }
         if (added > 0) { dirty = true; RenderReferences(); tabs.SelectedIndex = references.Count - 1; Update($"참조 프리셋 {added}개를 불러왔습니다."); }
         if (errors.Count > 0) MessageBox.Show(this, string.Join("\n\n", errors), "불러오기 실패", MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
     void RenderReferences()
     {
-        int old = tabs.SelectedIndex; tabs.Items.Clear();
+        int old = tabs.SelectedIndex; referenceViews.Clear(); tabs.Items.Clear();
         for (int pIndex = 0; pIndex < references.Count; pIndex++)
         {
             int presetIndex = pIndex; var preset = references[pIndex]; var collapsed = collapsedReferences[pIndex]; var collapsedSections = collapsedReferenceSections[pIndex];
             var tab = new TabItem { HorizontalContentAlignment = HorizontalAlignment.Stretch, MinWidth = 0 };
             var head = new Grid(); head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var tabTitle = Text(preset.Name, 12); tabTitle.TextWrapping = TextWrapping.NoWrap; tabTitle.TextTrimming = TextTrimming.CharacterEllipsis; tabTitle.VerticalAlignment = VerticalAlignment.Center; head.Children.Add(tabTitle);
-            var close = Button("×", () => { references.RemoveAt(presetIndex); collapsedReferences.RemoveAt(presetIndex); collapsedReferenceSections.RemoveAt(presetIndex); dirty = true; RenderReferences(); Update("참조 탭을 닫았습니다."); }, compact: true); close.Padding = new Thickness(2, 0, 2, 0); close.Margin = new Thickness(2, 0, 0, 0); close.ToolTip = "참조 탭 닫기"; Grid.SetColumn(close, 1); head.Children.Add(close); tab.Header = head; tab.ToolTip = preset.Path;
+            var close = Button("×", () =>
+            {
+                references.RemoveAt(presetIndex); collapsedReferences.RemoveAt(presetIndex); collapsedReferenceSections.RemoveAt(presetIndex); referenceToggleValues.RemoveAt(presetIndex); dirty = true; RenderReferences();
+                if (references.Count == 0)
+                {
+                    showingReferencePreview = false; SetSearchScope(0, lastReferenceSearchSection);
+                    if (togglePreviewSource == TogglePreviewSource.Reference) SetTogglePreviewSource(TogglePreviewSource.Work);
+                }
+                Update("참조 탭을 닫았습니다.");
+            }, compact: true); close.Padding = new Thickness(2, 0, 2, 0); close.Margin = new Thickness(2, 0, 0, 0); close.ToolTip = "참조 탭 닫기"; Grid.SetColumn(close, 1); head.Children.Add(close); tab.Header = head; tab.ToolTip = preset.Path;
             void BuildReference()
             {
             if (tab.Content is not null) return;
@@ -214,13 +249,19 @@ public sealed partial class MainWindow : Window
                 blockBody.Children.Add(card);
             }
             AppendSections(body, preset, false, collapsedSections);
-            tab.Content = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+            var editorScroll = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+            var previewRoot = new StackPanel { Margin = new Thickness(0, 12, 6, 0) };
+            var previewScroll = new ScrollViewer { Content = previewRoot, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+            previewRoot.PreviewMouseDown += (_, _) => SetSearchScope(0, SearchSection.Preview); previewRoot.GotKeyboardFocus += (_, _) => SetSearchScope(0, SearchSection.Preview);
+            var root = new Grid(); root.Children.Add(editorScroll); root.Children.Add(previewScroll);
+            var view = new ReferenceTabView(body, editorScroll, previewRoot, previewScroll, root); referenceViews[tab] = view; tab.Content = root;
+            ApplyReferencePreviewVisibility(); RefreshReferencePromptPreview();
             }
             tab.Tag = (Action)BuildReference; tabs.Items.Add(tab);
         }
         tabs.SelectedIndex = references.Count == 0 ? -1 : Math.Clamp(old, 0, references.Count - 1); referenceIndex = -1; Dispatcher.BeginInvoke(ResizeTabs); Update();
     }
-    void ClearReferenceSelection() { foreach (TabItem tab in tabs.Items) if (tab.Content is ScrollViewer v && v.Content is StackPanel p) foreach (var c in LogicalDescendants<Border>(p).Where(b => b.Tag is BlockView)) c.BorderBrush = Line; }
+    void ClearReferenceSelection() { foreach (var view in referenceViews.Values) foreach (var c in LogicalDescendants<Border>(view.EditorRoot).Where(b => b.Tag is BlockView)) c.BorderBrush = Line; }
     void ResizeTabs()
     {
         if (references.Count == 0 || tabs.ActualWidth <= 0) return;
@@ -373,9 +414,9 @@ public sealed partial class MainWindow : Window
     }
     static string NormalizeToggleNewlines(string text) => text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
     void SetToggleEditor() { toggleDelay.Stop(); settingToggleEditor = true; toggleEditor.Text = customToggleText; settingToggleEditor = false; toggleEditCaptured = false; }
-    List<ToggleDef> ParseToggles(out List<string> notices)
+    List<ToggleDef> ParseToggles(string source, out List<string> notices)
     {
-        notices = new(); var result = new List<ToggleDef>(); string[] lines = NormalizeToggleNewlines(customToggleText).Split('\n');
+        notices = new(); var result = new List<ToggleDef>(); string[] lines = NormalizeToggleNewlines(source).Split('\n');
         for (int i = 0; i < lines.Length; i++)
         {
             if (string.IsNullOrWhiteSpace(lines[i])) continue; string[] parts = lines[i].Split('='); string key = parts.ElementAtOrDefault(0) ?? "", name = parts.ElementAtOrDefault(1) ?? "", type = parts.ElementAtOrDefault(2) ?? "", option = parts.ElementAtOrDefault(3) ?? "";
@@ -402,7 +443,7 @@ public sealed partial class MainWindow : Window
     IEnumerable<ToggleDef> VisibleToggles()
     {
         ToggleDef? previousTop = null;
-        foreach (var node in GroupToggles(ParseToggles(out _)))
+        foreach (var node in GroupToggles(ParseToggles(customToggleText, out _)))
         {
             if (node.Def.Type == "group")
             {
@@ -426,7 +467,16 @@ public sealed partial class MainWindow : Window
     }
     void RenderTogglePreview()
     {
-        togglePreview.Children.Clear(); var definitions = ParseToggles(out var notices); toggleErrors.Text = string.Join("  ", notices);
+        togglePreview.Children.Clear();
+        bool referenceSource = togglePreviewSource == TogglePreviewSource.Reference && Current is not null;
+        string source = referenceSource ? Current!.Data.Str("customPromptTemplateToggle") : customToggleText;
+        var values = referenceSource ? CurrentReferenceToggleValues! : toggleValues;
+        var definitions = ParseToggles(source, out var notices); toggleErrors.Text = string.Join("  ", notices);
+        if (definitions.Count == 0)
+        {
+            togglePreview.Children.Add(Card(Text(referenceSource ? "이 참조 프리셋에는 표시할 채팅 화면 토글이 없습니다." : "작업 중인 채팅 화면 토글이 없습니다.", 12, Muted)));
+            return;
+        }
         ToggleDef? RenderItems(Panel target, IReadOnlyList<ToggleDef> items, ToggleDef? previous = null)
         {
             foreach (var def in items)
@@ -435,10 +485,10 @@ public sealed partial class MainWindow : Window
                 if (def.Type == "caption") { var caption = Text(def.Name, 11, Muted); caption.Tag = new ToggleAddress(def.Line); target.Children.Add(caption); previous = def; continue; }
                 if (def.Type == "divider") { var row = new StackPanel { Tag = new ToggleAddress(def.Line), Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 3) }; if (def.Name.Length > 0) row.Children.Add(Text(def.Name, 11, Muted)); row.Children.Add(new Separator { Width = 80, Margin = new Thickness(6, 0, 0, 0) }); target.Children.Add(row); previous = def; continue; }
                 var line = new StackPanel { Tag = new ToggleAddress(def.Line), Margin = new Thickness(0, 4, 4, 4) }; line.Children.Add(Text(def.Name, 12));
-                string currentValue = toggleValues.GetValueOrDefault(def.Key, "");
-                if (def.Type == "select") { var c = new ComboBox { ItemsSource = def.Options, SelectedIndex = int.TryParse(currentValue, out int n) && n >= 0 && n < def.Options.Length ? n : -1 }; c.SelectionChanged += (_, _) => { toggleValues[def.Key] = c.SelectedIndex < 0 ? "" : c.SelectedIndex.ToString(); ToggleValueChanged(); }; line.Children.Add(c); }
-                else if (def.Type is "text" or "textarea") { var t = new TextBox { Text = currentValue, AcceptsReturn = def.Type == "textarea", TextWrapping = TextWrapping.Wrap, MinHeight = def.Type == "textarea" ? 70 : 30, VerticalContentAlignment = VerticalAlignment.Top }; t.TextChanged += (_, _) => { toggleValues[def.Key] = t.Text; ToggleValueChanged(); }; line.Children.Add(t); }
-                else { var c = new CheckBox { Content = def.Name, IsChecked = currentValue == "1", Margin = new Thickness(0, 4, 0, 4) }; line.Children.Clear(); line.Children.Add(c); c.Click += (_, _) => { toggleValues[def.Key] = c.IsChecked == true ? "1" : "0"; ToggleValueChanged(); }; }
+                string currentValue = values.GetValueOrDefault(def.Key, "");
+                if (def.Type == "select") { var c = new ComboBox { ItemsSource = def.Options, SelectedIndex = int.TryParse(currentValue, out int n) && n >= 0 && n < def.Options.Length ? n : -1 }; c.SelectionChanged += (_, _) => { values[def.Key] = c.SelectedIndex < 0 ? "" : c.SelectedIndex.ToString(); ToggleValueChanged(referenceSource); }; line.Children.Add(c); }
+                else if (def.Type is "text" or "textarea") { var t = new TextBox { Text = currentValue, AcceptsReturn = def.Type == "textarea", TextWrapping = TextWrapping.Wrap, MinHeight = def.Type == "textarea" ? 70 : 30, VerticalContentAlignment = VerticalAlignment.Top }; t.TextChanged += (_, _) => { values[def.Key] = t.Text; ToggleValueChanged(referenceSource); }; line.Children.Add(t); }
+                else { var c = new CheckBox { Content = def.Name, IsChecked = currentValue == "1", Margin = new Thickness(0, 4, 0, 4) }; line.Children.Clear(); line.Children.Add(c); c.Click += (_, _) => { values[def.Key] = c.IsChecked == true ? "1" : "0"; ToggleValueChanged(referenceSource); }; }
                 target.Children.Add(line); previous = def;
             }
             return previous;
@@ -459,15 +509,44 @@ public sealed partial class MainWindow : Window
             else previousTop = RenderItems(togglePreview, [node.Def], previousTop);
         }
     }
-    void ToggleValueChanged() { dirty = true; RefreshPromptPreview(); Update(); }
+    void SetTogglePreviewSource(TogglePreviewSource source)
+    {
+        if (source == TogglePreviewSource.Reference && Current is null) return;
+        togglePreviewSource = source; RenderTogglePreview(); dirty = true; Update();
+    }
+    void ToggleValueChanged(bool referenceSource) { dirty = true; if (referenceSource) RefreshReferencePromptPreview(); else RefreshPromptPreview(); Update(); }
 
-    void TogglePromptPreview() { showingPreview = !showingPreview; SetSearchScope(1, showingPreview ? SearchSection.Preview : lastWorkSearchSection); workScroll.Content = showingPreview ? promptPreview : work; RefreshPromptPreview(); dirty = true; Update(); }
+    void TogglePromptPreview() { showingPreview = !showingPreview; if (showingPreview) togglePreviewSource = TogglePreviewSource.Work; SetSearchScope(1, showingPreview ? SearchSection.Preview : lastWorkSearchSection); workScroll.Content = showingPreview ? promptPreview : work; RenderTogglePreview(); RefreshPromptPreview(); dirty = true; Update(); }
     void RefreshPromptPreview() { if (showingPreview) RenderPromptPreview(PromptPreviewEngine.Build(blocks, basis, toggleValues, previewWithJoin)); }
+
+    void ToggleReferencePromptPreview()
+    {
+        if (Current is null) return;
+        showingReferencePreview = !showingReferencePreview;
+        if (showingReferencePreview) togglePreviewSource = TogglePreviewSource.Reference;
+        SetSearchScope(0, showingReferencePreview ? SearchSection.Preview : lastReferenceSearchSection);
+        ApplyReferencePreviewVisibility(); RenderTogglePreview(); RefreshReferencePromptPreview(); dirty = true; Update();
+    }
+    void ApplyReferencePreviewVisibility()
+    {
+        foreach (var view in referenceViews.Values)
+        {
+            view.EditorScroll.Visibility = showingReferencePreview ? Visibility.Collapsed : Visibility.Visible;
+            view.PreviewScroll.Visibility = showingReferencePreview ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+    void RefreshReferencePromptPreview()
+    {
+        if (!showingReferencePreview || Current is null || CurrentReferenceView is null || CurrentReferenceToggleValues is null) return;
+        RenderPromptPreview(CurrentReferenceView.PreviewRoot, CurrentReferenceView.TextSurfaces, CurrentReferenceView.AuxiliaryText,
+            PromptPreviewEngine.Build(Current.Blocks ?? [], Current, CurrentReferenceToggleValues, referencePreviewWithJoin));
+    }
 
     EditorProject CaptureProject()
     {
-        var p = new EditorProject { Basis = basis?.Clone(), DraftOther = draftOther.Clone(), ToggleText = NormalizeToggleNewlines(customToggleText), SelectedTab = tabs.SelectedIndex, SelectedBlock = selected, Preview = showingPreview, PreviewWithJoin = previewWithJoin, AdditionalChecks = SyntaxBox.AdditionalChecks, Ratios = [leftColumn.ActualWidth, workColumn.ActualWidth, toggleColumn.ActualWidth] };
+        var p = new EditorProject { Basis = basis?.Clone(), DraftOther = draftOther.Clone(), ToggleText = NormalizeToggleNewlines(customToggleText), SelectedTab = tabs.SelectedIndex, SelectedBlock = selected, Preview = showingPreview, PreviewWithJoin = previewWithJoin, ReferencePreview = showingReferencePreview, ReferencePreviewWithJoin = referencePreviewWithJoin, ToggleSourceReference = togglePreviewSource == TogglePreviewSource.Reference, AdditionalChecks = SyntaxBox.AdditionalChecks, Ratios = [leftColumn.ActualWidth, workColumn.ActualWidth, toggleColumn.ActualWidth] };
         p.References.AddRange(references.Select(v => v.Clone())); p.Blocks.AddRange(blocks.Select(v => v.Clone())); p.Regex.AddRange(regexScripts.Select(v => v.Clone())); foreach (var pair in toggleValues) p.ToggleValues[pair.Key] = pair.Value; foreach (var b in collapsedWork) { int i = blocks.IndexOf(b); if (i >= 0) p.CollapsedWork.Add(i); }
+        foreach (var values in referenceToggleValues) p.ReferenceToggleValues.Add(new(values));
         foreach (string key in customOtherFields) p.CustomOtherFields.Add(key);
         foreach (string key in collapsedWorkSections) p.CollapsedWorkSections.Add(key);
         for (int n = 0; n < references.Count; n++)
@@ -489,13 +568,13 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            var p = ProjectFile.Load(path); references.Clear(); references.AddRange(p.References); collapsedReferences.Clear(); collapsedReferenceSections.Clear();
+            var p = ProjectFile.Load(path); references.Clear(); references.AddRange(p.References); collapsedReferences.Clear(); collapsedReferenceSections.Clear(); referenceToggleValues.Clear(); referenceToggleValues.AddRange(p.ReferenceToggleValues.Select(values => new Dictionary<string, string>(values)));
             for (int n = 0; n < references.Count; n++) { var set = new HashSet<Value>(); foreach (int i in p.CollapsedReferences.ElementAtOrDefault(n) ?? []) if (i >= 0 && i < (references[n].Blocks?.Count ?? 0)) set.Add(references[n].Blocks![i]); collapsedReferences.Add(set); collapsedReferenceSections.Add(new HashSet<string>(p.CollapsedReferenceSections.ElementAtOrDefault(n) ?? [])); }
             blocks.Clear(); blocks.AddRange(p.Blocks); collapsedWork.Clear(); foreach (int i in p.CollapsedWork) if (i >= 0 && i < blocks.Count) collapsedWork.Add(blocks[i]); collapsedWorkSections.Clear(); foreach (string key in p.CollapsedWorkSections) collapsedWorkSections.Add(key);
-            basis = p.Basis; draftOther = p.DraftOther.Clone(); workSections = null; sectionsBasis = null; regexScripts.Clear(); regexScripts.AddRange(p.Regex.Select(v => v.Clone())); customToggleText = NormalizeToggleNewlines(p.ToggleText); toggleValues.Clear(); foreach (var pair in p.ToggleValues) toggleValues[pair.Key] = pair.Value; customOtherFields.Clear(); foreach (string key in p.CustomOtherFields) customOtherFields.Add(key); selected = p.SelectedBlock; showingPreview = p.Preview; previewWithJoin = p.PreviewWithJoin; withJoinToggle.IsChecked = previewWithJoin; projectPath = path;
+            basis = p.Basis; draftOther = p.DraftOther.Clone(); workSections = null; sectionsBasis = null; regexScripts.Clear(); regexScripts.AddRange(p.Regex.Select(v => v.Clone())); customToggleText = NormalizeToggleNewlines(p.ToggleText); toggleValues.Clear(); foreach (var pair in p.ToggleValues) toggleValues[pair.Key] = pair.Value; customOtherFields.Clear(); foreach (string key in p.CustomOtherFields) customOtherFields.Add(key); selected = p.SelectedBlock; showingPreview = p.Preview; previewWithJoin = p.PreviewWithJoin; showingReferencePreview = p.ReferencePreview; referencePreviewWithJoin = p.ReferencePreviewWithJoin; togglePreviewSource = p.ToggleSourceReference && references.Count > 0 ? TogglePreviewSource.Reference : TogglePreviewSource.Work; withJoinToggle.IsChecked = previewWithJoin; referenceWithJoinToggle.IsChecked = referencePreviewWithJoin; projectPath = path;
             SyntaxBox.AdditionalChecks = p.AdditionalChecks; additionalCheckBox.IsChecked = p.AdditionalChecks;
             double total = p.Ratios.Sum(); leftColumn.Width = new GridLength(p.Ratios[0] / total, GridUnitType.Star); workColumn.Width = new GridLength(p.Ratios[1] / total, GridUnitType.Star); toggleColumn.Width = new GridLength(p.Ratios[2] / total, GridUnitType.Star);
-            SetToggleEditor(); RenderReferences(); tabs.SelectedIndex = Math.Clamp(p.SelectedTab, -1, references.Count - 1); RenderWork(); RenderTogglePreview(); workScroll.Content = showingPreview ? promptPreview : work; RefreshPromptPreview(); undo.Clear(); redo.Clear(); dirty = false; Update("프로젝트를 불러왔습니다: " + path);
+            SetToggleEditor(); RenderReferences(); tabs.SelectedIndex = Math.Clamp(p.SelectedTab, -1, references.Count - 1); ApplyReferencePreviewVisibility(); RefreshReferencePromptPreview(); RenderWork(); RenderTogglePreview(); workScroll.Content = showingPreview ? promptPreview : work; RefreshPromptPreview(); undo.Clear(); redo.Clear(); dirty = false; Update("프로젝트를 불러왔습니다: " + path);
         }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "프로젝트 불러오기 실패", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
@@ -515,20 +594,22 @@ public sealed partial class MainWindow : Window
         try
         {
             if (tabs.Items.Count != 0) throw new Exception("empty reference tabs");
-            string fixture = Path.Combine(folder, "reference.risup"); for (int i = 0; i < 10; i++) { references.Add(RisupCodec.Load(fixture)); collapsedReferences.Add(new()); collapsedReferenceSections.Add(new()); } RenderReferences(); tabs.SelectedIndex = 0; Copy(true); basis = OtherPreset(references[0]); workSections = null; RenderWork();
+            string fixture = Path.Combine(folder, "reference.risup"); for (int i = 0; i < 10; i++) { references.Add(RisupCodec.Load(fixture)); collapsedReferences.Add(new()); collapsedReferenceSections.Add(new()); referenceToggleValues.Add(new()); } RenderReferences(); tabs.SelectedIndex = 0; Copy(true); basis = OtherPreset(references[0]); workSections = null; RenderWork();
             if (blocks.Count != references[0].Blocks!.Count) throw new Exception("tab copy"); string original = references[0].Blocks![0].Str("text"); var textbox = LogicalDescendants<SyntaxBox>(workCards[blocks[0]]).First(t => t.Tag is FieldAddress a && a.Key == "text"); textbox.Text = "UI 편집 테스트";
             if (blocks[0].Str("text") != "UI 편집 테스트" || references[0].Blocks![0].Str("text") != original) throw new Exception("editing/reference isolation"); Undo(); Redo();
             var moved = blocks[0]; Move(moved, 1); Undo(); referenceIndex = 0; int count = blocks.Count; Copy(false); Undo(); Duplicate(blocks[0]); Delete(blocks[selected]); Undo(); Undo();
             customToggleText = "cot=COT 토글\nstyle=문체=select=간결,상세\nnote=메모=text\narea=지시=textarea"; SetToggleEditor(); RenderTogglePreview(); toggleValues["cot"] = "1"; blocks[0].Set("text", Value.String("A{{#when::toggle::cot}}ON{{:else}}OFF{{/}}B")); showingPreview = true; workScroll.Content = promptPreview; RefreshPromptPreview(); string previewText = PromptPreviewEngine.Build(blocks, basis, toggleValues).PlainText; if (!previewText.Contains("AONB") || previewText.Contains("OFF")) throw new Exception("toggle prompt preview"); blocks[0].Set("text", Value.String("UI 편집 테스트")); RefreshPromptPreview();
+            references[0].Data.Set("customPromptTemplateToggle", Value.String("ref=참조 토글")); var referencePlain = references[0].Blocks!.First(b => Plain(b)); referencePlain.Set("text", Value.String("R{{#when::toggle::ref}}ON{{:else}}OFF{{/}}Z")); referenceToggleValues[0]["ref"] = "1"; showingReferencePreview = true; referencePreviewWithJoin = true; referenceWithJoinToggle.IsChecked = true; togglePreviewSource = TogglePreviewSource.Reference; ApplyReferencePreviewVisibility(); RefreshReferencePromptPreview(); RenderTogglePreview();
+            string referencePreviewText = PromptPreviewEngine.Build(references[0].Blocks!, references[0], referenceToggleValues[0], true).PlainText; if (!referencePreviewText.Contains("RONZ") || referencePreviewText.Contains("ROFFZ")) throw new Exception("reference toggle prompt preview");
             await Task.Delay(100); UpdateLayout(); var previewSurface = (FrameworkElement)Content; var previewBitmap = new RenderTargetBitmap((int)previewSurface.ActualWidth, (int)previewSurface.ActualHeight, 96, 96, PixelFormats.Pbgra32); previewBitmap.Render(previewSurface); var previewPng = new PngBitmapEncoder(); previewPng.Frames.Add(BitmapFrame.Create(previewBitmap)); using (var file = File.Create(Path.Combine(folder, "prompt-preview.png"))) previewPng.Save(file);
-            string project = Path.Combine(folder, "ui-project.risupproj"); ProjectFile.Save(CaptureProject(), project); var loaded = ProjectFile.Load(project); if (loaded.ToggleText != customToggleText || loaded.References.Count != 10 || loaded.Blocks.Count != blocks.Count || loaded.ToggleValues["cot"] != "1") throw new Exception("project roundtrip");
+            string project = Path.Combine(folder, "ui-project.risupproj"); ProjectFile.Save(CaptureProject(), project); var loaded = ProjectFile.Load(project); if (loaded.ToggleText != customToggleText || loaded.References.Count != 10 || loaded.Blocks.Count != blocks.Count || loaded.ToggleValues["cot"] != "1" || loaded.ReferenceToggleValues[0]["ref"] != "1" || !loaded.ReferencePreview || !loaded.ReferencePreviewWithJoin || !loaded.ToggleSourceReference) throw new Exception("project roundtrip");
             var output = basis!.Clone(); output.Data.Set("promptTemplate", Value.Array(blocks.Select(v => v.Clone()))); output.Data.Set("customPromptTemplateToggle", Value.String(customToggleText)); RisupCodec.Save(output, Path.Combine(folder, "ui-output.risup")); var reopened = RisupCodec.Load(Path.Combine(folder, "ui-output.risup")); if (reopened.Data.Str("customPromptTemplateToggle") != customToggleText) throw new Exception("toggle export");
-            showingPreview = false; workScroll.Content = work; RenderWork(); collapsedWork.Add(blocks[1]); RenderWork(); if (Descendants<TextBox>(workCards[blocks[0]]).First().VerticalScrollBarVisibility != ScrollBarVisibility.Disabled) throw new Exception("block textbox scrollbar");
+            showingPreview = false; showingReferencePreview = false; ApplyReferencePreviewVisibility(); workScroll.Content = work; RenderWork(); collapsedWork.Add(blocks[1]); RenderWork(); if (Descendants<TextBox>(workCards[blocks[0]]).First().VerticalScrollBarVisibility != ScrollBarVisibility.Disabled) throw new Exception("block textbox scrollbar");
             await Task.Delay(400); UpdateLayout(); var tops = tabs.Items.OfType<TabItem>().Select(t => Math.Round(t.TranslatePoint(new Point(0, 0), tabs).Y)).ToArray(); if (tops.Max() - tops.Min() > 3) throw new Exception("reference tabs wrapped");
-            var referenceBody = (StackPanel)((ScrollViewer)((TabItem)tabs.SelectedItem).Content).Content; var referenceCard = LogicalDescendants<Border>(referenceBody).First(b => b.Tag is BlockView); double referenceTop = referenceCard.TranslatePoint(new Point(), (UIElement)Content).Y; double workTop = workCards[blocks[0]].TranslatePoint(new Point(), (UIElement)Content).Y; if (Math.Abs(referenceTop - workTop) > 2) throw new Exception($"block top alignment: {referenceTop} / {workTop}");
+            var referenceBody = CurrentReferenceView!.EditorRoot; var referenceCard = LogicalDescendants<Border>(referenceBody).First(b => b.Tag is BlockView); double referenceTop = referenceCard.TranslatePoint(new Point(), (UIElement)Content).Y; double workTop = workCards[blocks[0]].TranslatePoint(new Point(), (UIElement)Content).Y; if (Math.Abs(referenceTop - workTop) > 6) throw new Exception($"block top alignment: {referenceTop} / {workTop}");
             if (Math.Abs(leftColumn.ActualWidth - workColumn.ActualWidth) > 2 || Math.Abs(toggleColumn.ActualWidth * 2 - leftColumn.ActualWidth) > 4) throw new Exception($"initial pane ratio: {leftColumn.ActualWidth}:{workColumn.ActualWidth}:{toggleColumn.ActualWidth}");
             var surface = (FrameworkElement)Content; var bitmap = new RenderTargetBitmap((int)surface.ActualWidth, (int)surface.ActualHeight, 96, 96, PixelFormats.Pbgra32); bitmap.Render(surface); var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap)); using (var file = File.Create(Path.Combine(folder, "ui-preview.png"))) png.Save(file);
-            File.WriteAllText(Path.Combine(folder, "ui-test-result.txt"), "PASS: 40:40:20 panes, two splitters, empty tabs, block collapse, full-height text, project roundtrip, custom toggle UI, live prompt preview, toggle export, copy/move/undo"); dirty = false; Application.Current.Shutdown(0);
+            File.WriteAllText(Path.Combine(folder, "ui-test-result.txt"), "PASS: 40:40:20 panes, two splitters, empty tabs, block collapse, full-height text, project roundtrip, independent reference/work toggle UI and live previews, toggle export, copy/move/undo"); dirty = false; Application.Current.Shutdown(0);
         }
         catch (Exception ex) { File.WriteAllText(Path.Combine(folder, "ui-test-result.txt"), ex.ToString()); dirty = false; Application.Current.Shutdown(1); }
     }

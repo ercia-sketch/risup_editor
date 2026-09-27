@@ -34,6 +34,7 @@ public sealed partial class MainWindow
     readonly List<SearchPane> searchPanes = new();
     int activeSearchPane;
     SearchSection lastWorkSearchSection = SearchSection.Blocks;
+    SearchSection lastReferenceSearchSection = SearchSection.Blocks;
     Action? clearSearchMark;
     bool searchNavigating;
 
@@ -71,7 +72,8 @@ public sealed partial class MainWindow
     void OpenSearch()
     {
         if (activeSearchPane < 0 || activeSearchPane >= searchPanes.Count) return;
-        if (activeSearchPane == 1) SetSearchScope(1, showingPreview ? SearchSection.Preview : searchPanes[1].Section == SearchSection.Preview ? lastWorkSearchSection : searchPanes[1].Section);
+        if (activeSearchPane == 0) SetSearchScope(0, showingReferencePreview ? SearchSection.Preview : searchPanes[0].Section == SearchSection.Preview ? lastReferenceSearchSection : searchPanes[0].Section);
+        else if (activeSearchPane == 1) SetSearchScope(1, showingPreview ? SearchSection.Preview : searchPanes[1].Section == SearchSection.Preview ? lastWorkSearchSection : searchPanes[1].Section);
         var pane = searchPanes[activeSearchPane]; pane.Bar.Visibility = Visibility.Visible; pane.Query.Focus(); pane.Query.SelectAll(); ScheduleSearch(activeSearchPane);
     }
     void DisableSearch() { if (!searchNavigating) activeSearchPane = -1; }
@@ -80,6 +82,7 @@ public sealed partial class MainWindow
         if (searchNavigating || scope < 0 || scope >= searchPanes.Count) return;
         ActivateSearchPane(scope);
         if (scope == 1 && section != SearchSection.Preview) lastWorkSearchSection = section;
+        if (scope == 0 && section != SearchSection.Preview) lastReferenceSearchSection = section;
         var pane = searchPanes[scope];
         if (pane.Section == section) { UpdateSearchLabel(scope); return; }
         pane.Section = section; pane.Hits.Clear(); pane.Index = -1; pane.Count.Text = "0 / 0";
@@ -157,14 +160,16 @@ public sealed partial class MainWindow
     {
         if (scope < 0 || scope >= searchPanes.Count) yield break;
         SearchSection section = searchPanes[scope].Section;
-        if (scope == 1 && section == SearchSection.Preview && showingPreview)
+        if (section == SearchSection.Preview && ((scope == 1 && showingPreview) || (scope == 0 && showingReferencePreview)))
         {
-            foreach (var surface in previewTextSurfaces)
+            var surfaces = scope == 0 ? CurrentReferenceView?.TextSurfaces ?? [] : previewTextSurfaces;
+            var auxiliary = scope == 0 ? CurrentReferenceView?.AuxiliaryText ?? [] : previewAuxiliaryText;
+            foreach (var surface in surfaces)
             {
                 var target = surface;
                 yield return new(target.Text, (start, length) => MarkPreviewSearch(target, start, length));
             }
-            foreach (var item in previewAuxiliaryText)
+            foreach (var item in auxiliary)
             {
                 var target = item;
                 yield return new(target.Text, (start, length) => MarkSearch(target.Element, start, length));
@@ -245,7 +250,9 @@ public sealed partial class MainWindow
         PresetFieldKind.Json => ValueJson.Format(value) ?? value.Text(),
         _ => Scalar(value)
     };
-    DependencyObject SearchRoot(int scope) => scope == 0 ? (tabs.SelectedItem as TabItem)?.Content as DependencyObject ?? tabs : scope == 1 && showingPreview ? promptPreview : work;
+    DependencyObject SearchRoot(int scope) => scope == 0
+        ? showingReferencePreview ? (DependencyObject?)CurrentReferenceView?.PreviewRoot ?? tabs : (DependencyObject?)CurrentReferenceView?.EditorRoot ?? tabs
+        : scope == 1 && showingPreview ? promptPreview : work;
     void LocateBlockField(int scope, Value block, string key, int start, int length)
     {
         var card = LogicalDescendants<Border>(SearchRoot(scope)).FirstOrDefault(b => b.Tag is BlockView view && ReferenceEquals(view.Block, block));

@@ -12,7 +12,7 @@ namespace RisupEditor;
 public static class AppInfo
 {
     public const string Name = "★프롬프트 에디터─슈퍼 이지★";
-    public const string Version = "v1.0.1";
+    public const string Version = "v1.1.0";
 }
 
 public static class Entry

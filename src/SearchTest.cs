@@ -41,6 +41,11 @@ public sealed partial class MainWindow
             SetSearchScope(0, SearchSection.Blocks); var referencePane = searchPanes[0]; referencePane.Bar.Visibility = Visibility.Visible; referencePane.Query.Text = "참조검색_숨김"; referencePane.Timer.Stop(); await RefreshSearch(0); UpdateLayout();
             if (referencePane.Hits.Count != 1 || !LogicalDescendants<TextBox>(SearchRoot(0)).Any(t => t.SelectedText == "참조검색_숨김" && t.IsVisible)) throw new Exception("reference search failed");
             if (!referencePane.Label.Text.Contains(Current!.Name, StringComparison.Ordinal)) throw new Exception("reference preset name missing from search scope");
+            referenceBlock.Set("innerFormat", Value.String("참조검색_숨김 {{slot}} 참조미리보기검색값")); showingReferencePreview = true; ApplyReferencePreviewVisibility(); RefreshReferencePromptPreview(); SetSearchScope(0, SearchSection.Preview);
+            referencePane.Query.Text = "참조미리보기검색값"; referencePane.Timer.Stop(); await RefreshSearch(0); UpdateLayout();
+            if (referencePane.Hits.Count != 1 || !(CurrentReferenceView?.TextSurfaces.Any(surface => surface.Box.Selection.Text == "참조미리보기검색값") ?? false)) throw new Exception("reference preview scope search failed");
+            if (!referencePane.Label.Text.Contains("미리보기", StringComparison.Ordinal) || !referencePane.Label.Text.Contains(Current!.Name, StringComparison.Ordinal)) throw new Exception("reference preview search label failed");
+            showingReferencePreview = false; ApplyReferencePreviewVisibility(); SetSearchScope(0, SearchSection.Blocks);
             var script = Value.Map(); script.Set("comment", Value.String("정규식검색값")); script.Set("type", Value.String("editoutput")); script.Set("in", Value.String("찾을정규식")); script.Set("out", Value.String("바꿀정규식")); regexScripts.Add(script); workSections = null; RenderWork();
             SetSearchScope(1, SearchSection.Regex); workPane.Bar.Visibility = Visibility.Visible; workPane.Query.Text = "찾을정규식"; workPane.Timer.Stop(); await RefreshSearch(1); UpdateLayout();
             if (workPane.Hits.Count != 1 || !LogicalDescendants<TextBox>(work).Any(t => t.SelectedText == "찾을정규식" && t.IsVisible)) throw new Exception("regex value search failed");
@@ -56,7 +61,7 @@ public sealed partial class MainWindow
             CloseSearch(1); CloseSearch(0);
             var surface = (FrameworkElement)Content; UpdateLayout(); var bitmap = new RenderTargetBitmap((int)surface.ActualWidth, (int)surface.ActualHeight, 96, 96, PixelFormats.Pbgra32); bitmap.Render(surface);
             var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap)); using (var file = File.Create(Path.Combine(folder, "search-preview.png"))) png.Save(file);
-            File.WriteAllText(Path.Combine(folder, "search-result.txt"), $"PASS: section-scoped reference/work/block/toggle/regex/other/preview search, labels excluded, chat toggle disabled, selection preserved, next/previous\nCharacters: {large.Length}\nMatches: 4000\nSearch and first navigation ms: {timer.Elapsed.TotalMilliseconds:F2}");
+            File.WriteAllText(Path.Combine(folder, "search-result.txt"), $"PASS: section-scoped reference/work/block/toggle/regex/other previews, labels excluded, chat toggle disabled, selection preserved, next/previous\nCharacters: {large.Length}\nMatches: 4000\nSearch and first navigation ms: {timer.Elapsed.TotalMilliseconds:F2}");
             dirty = false; Application.Current.Shutdown(0);
         }
         catch (Exception ex) { File.WriteAllText(Path.Combine(folder, "search-result.txt"), ex.ToString()); dirty = false; Application.Current.Shutdown(1); }

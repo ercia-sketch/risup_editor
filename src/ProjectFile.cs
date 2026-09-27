@@ -13,6 +13,7 @@ public sealed class EditorProject
     public Value DraftOther { get; set; } = Value.Map();
     public string ToggleText { get; set; } = "";
     public Dictionary<string, string> ToggleValues { get; } = new();
+    public List<Dictionary<string, string>> ReferenceToggleValues { get; } = new();
     public HashSet<string> CustomOtherFields { get; } = new(StringComparer.Ordinal);
     public HashSet<int> CollapsedWork { get; } = new();
     public List<HashSet<int>> CollapsedReferences { get; } = new();
@@ -22,6 +23,9 @@ public sealed class EditorProject
     public int SelectedBlock { get; set; } = -1;
     public bool Preview { get; set; }
     public bool PreviewWithJoin { get; set; }
+    public bool ReferencePreview { get; set; }
+    public bool ReferencePreviewWithJoin { get; set; }
+    public bool ToggleSourceReference { get; set; }
     public bool AdditionalChecks { get; set; }
     public double[] Ratios { get; set; } = [4, 4, 2];
 }
@@ -43,6 +47,10 @@ public static class ProjectFile
         var toggleValues = Value.Map();
         foreach (var pair in state.ToggleValues) toggleValues.Set(pair.Key, Value.String(pair.Value));
         root.Set("toggleValues", toggleValues);
+        root.Set("referenceToggleValues", Value.Array(state.ReferenceToggleValues.Select(values =>
+        {
+            var map = Value.Map(); foreach (var pair in values) map.Set(pair.Key, Value.String(pair.Value)); return map;
+        })));
         root.Set("customOtherFields", Value.Array(state.CustomOtherFields.Order(StringComparer.Ordinal).Select(Value.String)));
         root.Set("collapsedWork", Value.Array(state.CollapsedWork.Order().Select(i => Value.Int(i))));
         root.Set("collapsedReferences", Value.Array(state.CollapsedReferences.Select(set => Value.Array(set.Order().Select(i => Value.Int(i))))));
@@ -52,6 +60,9 @@ public static class ProjectFile
         root.Set("selectedBlock", Value.Int(state.SelectedBlock));
         root.Set("preview", Value.Bool(state.Preview));
         root.Set("previewWithJoin", Value.Bool(state.PreviewWithJoin));
+        root.Set("referencePreview", Value.Bool(state.ReferencePreview));
+        root.Set("referencePreviewWithJoin", Value.Bool(state.ReferencePreviewWithJoin));
+        root.Set("toggleSourceReference", Value.Bool(state.ToggleSourceReference));
         root.Set("additionalChecks", Value.Bool(state.AdditionalChecks));
         root.Set("ratios", Value.Array(state.Ratios.Select(r => Value.Int((long)Math.Round(r * 1000)))));
 
@@ -97,6 +108,9 @@ public static class ProjectFile
             SelectedBlock = (int)(root.Get("selectedBlock")?.Number() ?? -1),
             Preview = root.Get("preview")?.Boolean() ?? false,
             PreviewWithJoin = root.Get("previewWithJoin")?.Boolean() ?? false,
+            ReferencePreview = root.Get("referencePreview")?.Boolean() ?? false,
+            ReferencePreviewWithJoin = root.Get("referencePreviewWithJoin")?.Boolean() ?? false,
+            ToggleSourceReference = root.Get("toggleSourceReference")?.Boolean() ?? false,
             AdditionalChecks = root.Get("additionalChecks")?.Boolean() ?? false
         };
         foreach (var item in root.Get("references")?.Items ?? []) state.References.Add(ReadPreset(item));
@@ -105,6 +119,10 @@ public static class ProjectFile
         else if (state.Basis?.Data.Get("regex")?.Items is { } legacyRegex) foreach (var item in legacyRegex) state.Regex.Add(item.Clone());
         state.Basis?.Data.Remove("promptTemplate"); state.Basis?.Data.Remove("customPromptTemplateToggle"); state.Basis?.Data.Remove("regex");
         foreach (var pair in root.Get("toggleValues")?.Fields ?? []) if (pair.Key.Text() is { } key) state.ToggleValues[key] = pair.Item.Text() ?? "";
+        foreach (var map in root.Get("referenceToggleValues")?.Items ?? [])
+        {
+            var values = new Dictionary<string, string>(); foreach (var pair in map.Fields ?? []) if (pair.Key.Text() is { } key) values[key] = pair.Item.Text() ?? ""; state.ReferenceToggleValues.Add(values);
+        }
         foreach (var item in root.Get("customOtherFields")?.Items ?? []) if (item.Text() is { } key) state.CustomOtherFields.Add(key);
         foreach (var item in root.Get("collapsedWork")?.Items ?? []) if (item.Number() is { } i) state.CollapsedWork.Add((int)i);
         foreach (var set in root.Get("collapsedReferences")?.Items ?? []) state.CollapsedReferences.Add((set.Items ?? []).Select(v => (int)(v.Number() ?? -1)).Where(i => i >= 0).ToHashSet());
@@ -114,6 +132,8 @@ public static class ProjectFile
         if (ratios is { Length: 3 } && ratios.All(v => v > 0)) state.Ratios = ratios;
         while (state.CollapsedReferences.Count < state.References.Count) state.CollapsedReferences.Add(new());
         while (state.CollapsedReferenceSections.Count < state.References.Count) state.CollapsedReferenceSections.Add(new());
+        while (state.ReferenceToggleValues.Count < state.References.Count) state.ReferenceToggleValues.Add(new());
+        if (state.ReferenceToggleValues.Count > state.References.Count) state.ReferenceToggleValues.RemoveRange(state.References.Count, state.ReferenceToggleValues.Count - state.References.Count);
         return state;
     }
 

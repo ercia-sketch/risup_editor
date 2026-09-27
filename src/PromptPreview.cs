@@ -649,15 +649,28 @@ public sealed partial class MainWindow
             return span?.Run.ContentStart.GetPositionAtOffset(Math.Clamp(offset - span.Start, 0, span.Length), LogicalDirection.Forward);
         }
     }
+    sealed class ReferenceTabView(StackPanel editorRoot, ScrollViewer editorScroll, StackPanel previewRoot, ScrollViewer previewScroll, Grid root)
+    {
+        public StackPanel EditorRoot { get; } = editorRoot;
+        public ScrollViewer EditorScroll { get; } = editorScroll;
+        public StackPanel PreviewRoot { get; } = previewRoot;
+        public ScrollViewer PreviewScroll { get; } = previewScroll;
+        public Grid Root { get; } = root;
+        public List<PreviewTextSurface> TextSurfaces { get; } = new();
+        public List<(string Text, FrameworkElement Element)> AuxiliaryText { get; } = new();
+    }
     readonly List<PreviewTextSurface> previewTextSurfaces = new();
     readonly List<(string Text, FrameworkElement Element)> previewAuxiliaryText = new();
 
     void RenderPromptPreview(PromptPreviewResult result)
+        => RenderPromptPreview(promptPreview, previewTextSurfaces, previewAuxiliaryText, result);
+
+    void RenderPromptPreview(StackPanel target, List<PreviewTextSurface> textSurfaces, List<(string Text, FrameworkElement Element)> auxiliaryText, PromptPreviewResult result)
     {
-        promptPreview.Children.Clear(); previewTextSurfaces.Clear(); previewAuxiliaryText.Clear();
+        target.Children.Clear(); textSurfaces.Clear(); auxiliaryText.Clear();
         if (result.Entries.Count == 0)
         {
-            promptPreview.Children.Add(Card(Text("표시할 프롬프트 메시지가 없습니다.", 13, Muted))); return;
+            target.Children.Add(Card(Text("표시할 프롬프트 메시지가 없습니다.", 13, Muted))); return;
         }
         foreach (var entry in result.Entries)
         {
@@ -665,18 +678,18 @@ public sealed partial class MainWindow
             var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
             var role = Text(entry.Kind == PromptPreviewEntryKind.Runtime ? "RUNTIME · " + entry.Role : entry.Role.ToUpperInvariant(), 11,
                 entry.Kind == PromptPreviewEntryKind.Runtime ? new SolidColorBrush(Color.FromRgb(151, 91, 18)) : RoleBrush(entry.Role));
-            role.FontWeight = FontWeights.SemiBold; header.Children.Add(role); previewAuxiliaryText.Add((role.Text, role));
+            role.FontWeight = FontWeights.SemiBold; header.Children.Add(role); auxiliaryText.Add((role.Text, role));
             if (entry.CachePoint)
             {
-                var cache = Text("CACHE POINT", 10, Accent); DockPanel.SetDock(cache, Dock.Right); header.Children.Add(cache); previewAuxiliaryText.Add((cache.Text, cache));
+                var cache = Text("CACHE POINT", 10, Accent); DockPanel.SetDock(cache, Dock.Right); header.Children.Add(cache); auxiliaryText.Add((cache.Text, cache));
             }
             body.Children.Add(header);
             var document = new FlowDocument { PagePadding = new Thickness(0), FontFamily = new FontFamily("Consolas, Malgun Gothic"), FontSize = 13, Foreground = Ink };
             var paragraph = new Paragraph { Margin = new Thickness(0) }; document.Blocks.Add(paragraph);
             var content = new RichTextBox { Document = document, IsReadOnly = true, IsDocumentEnabled = true, BorderThickness = new Thickness(0), Background = Brushes.Transparent, Padding = new Thickness(0), VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, MinHeight = 22, Cursor = Cursors.IBeam };
-            previewTextSurfaces.Add(AddPreviewInlines(content, paragraph, entry.Content)); body.Children.Add(content);
-            if (!string.IsNullOrEmpty(entry.Note)) { var note = Text(entry.Note, 10, Muted); note.Margin = new Thickness(0, 7, 0, 0); body.Children.Add(note); previewAuxiliaryText.Add((note.Text, note)); }
-            promptPreview.Children.Add(new Border
+            textSurfaces.Add(AddPreviewInlines(content, paragraph, entry.Content)); body.Children.Add(content);
+            if (!string.IsNullOrEmpty(entry.Note)) { var note = Text(entry.Note, 10, Muted); note.Margin = new Thickness(0, 7, 0, 0); body.Children.Add(note); auxiliaryText.Add((note.Text, note)); }
+            target.Children.Add(new Border
             {
                 Background = entry.Kind == PromptPreviewEntryKind.Runtime ? new SolidColorBrush(Color.FromRgb(255, 250, 235)) : Brushes.White,
                 BorderBrush = entry.Kind == PromptPreviewEntryKind.Runtime ? new SolidColorBrush(Color.FromRgb(235, 201, 133)) : Line,
